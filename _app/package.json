@@ -1,0 +1,43 @@
+{
+  "name": "soundboard-discord",
+  "productName": "Soundboard Discord",
+  "version": "1.0.0",
+  "description": "Soundboard de memes vocaux pour Discord (micro virtuel)",
+  "author": "Wistee",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "dist": "electron-builder --win"
+  },
+  "build": {
+    "appId": "com.wistee.soundboard-discord",
+    "productName": "Soundboard Discord",
+    "artifactName": "Soundboard-Discord-Portable-${version}.${ext}",
+    "files": [
+      "main.js",
+      "preload.js",
+      "renderer/**",
+      "vendor/**",
+      "build/icon.png"
+    ],
+    "win": {
+      "target": "portable",
+      "icon": "build/icon.ico",
+      "signAndEditExecutable": false
+    },
+    "portable": {
+      "artifactName": "Soundboard-Discord-Portable-${version}.${ext}"
+    },
+    "nsis": {
+      "oneClick": true,
+      "perMachine": false,
+      "createDesktopShortcut": true,
+      "shortcutName": "Soundboard Discord",
+      "runAfterFinish": true
+    }
+  },
+  "devDependencies": {
+    "electron": "^37.10.3",
+    "electron-builder": "^24.13.3"
+  }
+}

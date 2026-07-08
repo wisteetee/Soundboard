@@ -1,0 +1,14 @@
+# Dépendances (réinstallables avec « npm install ») — jamais versionnées
+_app/node_modules/
+
+# Sortie de build electron-builder (volumineuse, régénérable avec « npm run dist »)
+_app/dist/
+
+# Fichiers techniques Electron / OS
+_corbeille/
+Thumbs.db
+Desktop.ini
+*.log
+
+# Réglages locaux de l'utilisateur (chemins machine-spécifiques)
+_app/node_modules/.cache/

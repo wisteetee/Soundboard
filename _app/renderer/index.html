@@ -1,0 +1,228 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self' snd:; script-src 'self'; worker-src 'self' blob:; connect-src 'self'; media-src snd: blob: mediastream:; style-src 'self' 'unsafe-inline'; img-src 'self' data: icon:;">
+<title>🎙️ Soundboard Discord</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<header>
+  <div class="brand">🎙️ Soundboard<small>pour Discord</small></div>
+  <div class="tabs">
+    <button class="tab active" data-tab="sounds">🎵 Sons</button>
+    <button class="tab" data-tab="voice">🎙️ Voix</button>
+  </div>
+  <input id="search" type="text" placeholder="🔍  Rechercher un son…" autocomplete="off">
+  <button id="btnRandom" title="Jouer un son au hasard">🎲</button>
+  <button id="btnAdd" class="primary">➕ Ajouter des sons</button>
+  <button id="btnStop" class="danger">⏹ Stop <span style="opacity:.6">(Échap)</span></button>
+  <button id="btnSettings" title="Réglages">⚙️</button>
+</header>
+
+<div id="cableBanner">
+  ⚠️ <b>Câble audio virtuel non détecté.</b> Pour envoyer les sons dans Discord, installe
+  <a href="https://vb-audio.com/Cable/" target="_blank" rel="noopener">VB-Audio Virtual Cable</a> (gratuit) :
+  télécharge, dézippe, clic droit sur <b>VBCABLE_Setup_x64.exe</b> → Exécuter en tant qu'administrateur → redémarre le PC.
+  Ensuite dans Discord : Paramètres vocaux → Périphérique d'entrée → <b>CABLE Output</b>.
+  <a href="#" id="rescanDevices">↻ J'ai installé, re-scanner</a>
+</div>
+
+<div class="layout">
+  <main id="main">
+    <div id="content"></div>
+
+    <div id="voiceView" style="display:none">
+      <div class="voice-head">
+        <h2 style="margin:0">🎙️ Modulateur de voix</h2>
+        <div class="hint" style="margin-top:4px">
+          Choisis une voix : ta parole est transformée en temps réel et envoyée dans Discord
+          par le câble virtuel. Clique de nouveau sur « Normale » pour revenir à ta vraie voix.
+        </div>
+        <div id="voiceMicWarn" class="voice-warn">
+          ⚠️ Active d'abord <b>« 🎤 Mon micro → Discord »</b> dans les réglages ⚙️ pour t'entendre transformé.
+          <button class="testbtn" id="voiceEnableMic" style="margin-left:8px">Activer maintenant</button>
+        </div>
+        <div class="voice-monitor">
+          <label class="switch"><input type="checkbox" id="swVoiceMon"><span class="sl"></span></label>
+          <div>
+            <b>🎧 M'entendre (retour casque)</b>
+            <div class="hint" style="margin-top:2px">
+              Renvoie ta voix modifiée dans ton casque pour la tester. Utilise le périphérique de
+              « Retour local » (réglages ⚙️). Pense à le couper en conversation réelle : t'entendre
+              avec un léger décalage peut gêner.
+            </div>
+          </div>
+        </div>
+      </div>
+      <div id="voiceGrid"></div>
+    </div>
+  </main>
+
+  <aside id="settings">
+    <h2>⚙️ Réglages</h2>
+
+    <div class="card">
+      <h3>
+        <span>📡 Sortie vers Discord <span id="cableBadge" class="badge ko">non détecté</span></span>
+        <label class="switch"><input type="checkbox" id="swDiscord"><span class="sl"></span></label>
+      </h3>
+      <select id="selDiscord"></select>
+      <div class="vol">🔊 <input type="range" id="volDiscord" min="0" max="100" value="100"><span id="volDiscordLbl">100%</span></div>
+      <button class="testbtn" id="testDiscord">🎵 Tester (bip)</button>
+      <div class="hint">Choisis <b>CABLE Input</b> : c'est le "micro virtuel" que Discord écoutera.</div>
+    </div>
+
+    <div class="card">
+      <h3>
+        <span>🎧 Retour local (t'entendre)</span>
+        <label class="switch"><input type="checkbox" id="swMonitor" checked><span class="sl"></span></label>
+      </h3>
+      <select id="selMonitor"></select>
+      <div class="vol">🔊 <input type="range" id="volMonitor" min="0" max="100" value="50"><span id="volMonitorLbl">50%</span></div>
+      <div class="hint">Joue aussi le son dans ton casque pour que tu l'entendes.</div>
+    </div>
+
+    <div class="card">
+      <h3>
+        <span>🎤 Mon micro → Discord</span>
+        <label class="switch"><input type="checkbox" id="swMic"><span class="sl"></span></label>
+      </h3>
+      <select id="selMic"></select>
+      <div class="vol">🎚 <input type="range" id="volMic" min="0" max="200" value="100"><span id="volMicLbl">100%</span></div>
+      <div class="hint">Mixe ta voix avec les sons dans le câble virtuel : tu peux parler <b>et</b> jouer des sons.
+      Laisse activé tant que le soundboard est ouvert.</div>
+    </div>
+
+    <div class="card">
+      <h3><span>⌨️ Raccourcis clavier globaux</span>
+        <label class="switch"><input type="checkbox" id="swGlobal" checked><span class="sl"></span></label>
+      </h3>
+      <div class="hint">Les touches assignées marchent <b>même hors de la fenêtre</b> (en jeu, dans Discord…).
+      Utilise un préfixe pour éviter les conflits : clic droit sur un son → « Assigner une touche »,
+      puis appuie par ex. sur <b>Ctrl+Alt+1</b>. Stop global : <b id="stopAccel">Ctrl+Alt+X</b>.</div>
+      <div id="globalWarn" class="hint" style="color:var(--yellow)"></div>
+    </div>
+
+    <div class="card">
+      <h3><span>▶️ Lecture & fenêtre</span></h3>
+      <label class="row">
+        <label class="switch"><input type="checkbox" id="swCut"><span class="sl"></span></label>
+        Couper le son précédent quand j'en lance un nouveau
+      </label>
+      <label class="row">
+        <label class="switch"><input type="checkbox" id="swTray" checked><span class="sl"></span></label>
+        Réduire dans la zone de notification à la fermeture
+      </label>
+      <label class="row">
+        <label class="switch"><input type="checkbox" id="swLogin"><span class="sl"></span></label>
+        Démarrer avec Windows
+      </label>
+    </div>
+
+    <div class="card">
+      <h3><span>📁 Dossier des sons</span></h3>
+      <div class="hint" id="dirPath" style="word-break:break-all"></div>
+      <div style="display:flex;gap:8px;margin-top:8px;flex-wrap:wrap">
+        <button class="testbtn" id="openDir">📂 Ouvrir</button>
+        <button class="testbtn" id="changeDir">Changer…</button>
+      </div>
+    </div>
+
+    <details class="help card">
+      <summary>❓ Configurer Discord (important)</summary>
+      <div class="hint">
+        1. Discord → ⚙️ Paramètres → <b>Voix et vidéo</b><br>
+        2. Périphérique d'entrée : <b>CABLE Output (VB-Audio Virtual Cable)</b><br>
+        3. Désactive la <b>Suppression du bruit (Krisp)</b> — sinon Discord filtre les memes comme du bruit !<br>
+        4. Sensibilité d'entrée : décoche "automatique" et mets le curseur bas.<br><br>
+        Pense à activer "🎤 Mon micro → Discord" ci-dessus pour que ta voix passe aussi.
+      </div>
+    </details>
+
+    <div class="hint" style="text-align:center;opacity:.6" id="versionLbl"></div>
+  </aside>
+</div>
+
+<footer>
+  <span><span class="dot" id="dotApp" style="background:var(--green)"></span><span id="statApp">Application prête</span></span>
+  <span><span class="dot" id="dotCable" style="background:var(--red)"></span><span id="statCable">Câble virtuel : non détecté</span></span>
+  <span><span class="dot" id="dotMic" style="background:var(--text-dim)"></span><span id="statMic">Micro → Discord : inactif</span></span>
+  <span><span class="dot" id="dotVoice" style="background:var(--text-dim)"></span><span id="statVoice">Voix : normale</span></span>
+  <span style="margin-left:auto">💡 Glisse des fichiers audio ici pour les ajouter</span>
+</footer>
+
+<div id="dropOverlay">📥 Dépose tes sons ici !</div>
+<div id="ctx"></div>
+
+<div id="keyCapture">
+  <div>⌨️ Appuie sur une combinaison pour <span id="keyCaptureName"></span></div>
+  <div class="sub">Conseil : utilise <b>Ctrl+Alt+…</b> · Échap pour annuler · Suppr pour retirer la touche</div>
+</div>
+
+<!-- Fenêtre de saisie (remplace prompt(), non supporté par Electron) -->
+<div id="promptModal">
+  <div class="modal-box" style="width:400px">
+    <div class="modal-head">
+      <div>
+        <div class="modal-title" id="promptTitle">Renommer</div>
+        <div class="modal-sub" id="promptSub"></div>
+      </div>
+      <button id="promptClose" title="Fermer">✕</button>
+    </div>
+    <div class="modal-section">
+      <input id="promptInput" type="text" autocomplete="off" spellcheck="false">
+    </div>
+    <div class="modal-foot" style="justify-content:flex-end">
+      <button class="testbtn" id="promptCancel">Annuler</button>
+      <button class="primary" id="promptOk">Valider</button>
+    </div>
+  </div>
+</div>
+
+<!-- Éditeur d'icône -->
+<div id="iconModal">
+  <div class="modal-box">
+    <div class="modal-head">
+      <span id="iconPreview"></span>
+      <div>
+        <div class="modal-title" id="iconSoundName">Icône</div>
+        <div class="modal-sub">Choisis un emoji, une couleur ou une image</div>
+      </div>
+      <button id="iconClose" title="Fermer">✕</button>
+    </div>
+
+    <div class="modal-section">
+      <div class="modal-label">🖼️ Image personnalisée</div>
+      <div id="iconDrop">Glisse une image ici, ou
+        <button class="testbtn" id="iconPickBtn">Parcourir…</button>
+        <div class="modal-sub" style="margin-top:6px">PNG, JPG, GIF… (idéal : une image carrée)</div>
+      </div>
+      <button class="testbtn danger-txt" id="iconRemoveImg" style="display:none;margin-top:8px">🗑️ Retirer l'image</button>
+    </div>
+
+    <div class="modal-section">
+      <div class="modal-label">😀 Emoji</div>
+      <div id="emojiGrid"></div>
+    </div>
+
+    <div class="modal-section">
+      <div class="modal-label">🎨 Couleur de fond</div>
+      <div id="colorRow"></div>
+    </div>
+
+    <div class="modal-foot">
+      <button class="testbtn" id="iconReset">↺ Réinitialiser (auto)</button>
+      <button class="primary" id="iconDone">Terminé</button>
+    </div>
+  </div>
+</div>
+
+<div id="toast"></div>
+
+<script src="../vendor/SoundTouchNode.js"></script>
+<script src="voicefx.js"></script>
+<script src="renderer.js"></script>
+</body>
+</html>
