@@ -1,0 +1,8 @@
+# Backend Voix IA (RVC) — dépendances Python 3.10
+# torch/torchaudio CUDA sont installés séparément par setup.ps1 (index PyTorch cu118)
+rvc-python
+sounddevice
+fastapi
+uvicorn
+numpy
+scipy

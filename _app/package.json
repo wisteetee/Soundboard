@@ -20,6 +20,17 @@
       "vendor/**",
       "build/icon.png"
     ],
+    "extraResources": [
+      {
+        "from": "ia",
+        "to": "ia",
+        "filter": [
+          "server.py",
+          "requirements.txt",
+          "setup.ps1"
+        ]
+      }
+    ],
     "win": {
       "target": "portable",
       "icon": "build/icon.ico",
@@ -39,5 +50,8 @@
   "devDependencies": {
     "electron": "^37.10.3",
     "electron-builder": "^24.13.3"
+  },
+  "dependencies": {
+    "msedge-tts": "^2.0.7"
   }
 }

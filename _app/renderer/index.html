@@ -2,7 +2,7 @@
 <html lang="fr">
 <head>
 <meta charset="UTF-8">
-<meta http-equiv="Content-Security-Policy" content="default-src 'self' snd:; script-src 'self'; worker-src 'self' blob:; connect-src 'self'; media-src snd: blob: mediastream:; style-src 'self' 'unsafe-inline'; img-src 'self' data: icon:;">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self' snd: vid:; script-src 'self' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' snd: vid: blob:; media-src snd: vid: blob: mediastream:; style-src 'self' 'unsafe-inline'; img-src 'self' data: icon:; frame-src http://127.0.0.1:*;">
 <title>🎙️ Soundboard Discord</title>
 <link rel="stylesheet" href="style.css">
 </head>
@@ -10,27 +10,53 @@
 
 <header>
   <div class="brand">🎙️ Soundboard<small>pour Discord</small></div>
-  <div class="tabs">
-    <button class="tab active" data-tab="sounds">🎵 Sons</button>
-    <button class="tab" data-tab="voice">🎙️ Voix</button>
+  <div class="searchwrap" id="searchWrap">
+    <input id="search" type="text" placeholder="🔍  Rechercher un son…" autocomplete="off">
+    <button id="searchClear" title="Effacer la recherche">✕</button>
   </div>
-  <input id="search" type="text" placeholder="🔍  Rechercher un son…" autocomplete="off">
+  <select id="sortSel" title="Ordre d'affichage des sons">
+    <option value="name">Tri : nom</option>
+    <option value="plays">Tri : plus joués</option>
+    <option value="recent">Tri : récents</option>
+  </select>
+  <button id="viewBtn" title="Affichage : grandes tuiles / compact / liste">▦</button>
   <button id="btnRandom" title="Jouer un son au hasard">🎲</button>
-  <button id="btnAdd" class="primary">➕ Ajouter des sons</button>
+  <button id="btnAdd" class="primary">➕ Ajouter</button>
+  <button id="btnUrl" title="Importer un son depuis une URL (lien direct .mp3)">🌐</button>
+  <button id="btnNewCat" title="Créer une catégorie (sous-dossier)">📁➕</button>
+  <button id="btnReplay" title="Instant replay : figer les dernières secondes en son" style="display:none">💾 Replay</button>
   <button id="btnStop" class="danger">⏹ Stop <span style="opacity:.6">(Échap)</span></button>
-  <button id="btnSettings" title="Réglages">⚙️</button>
 </header>
 
 <div id="cableBanner">
-  ⚠️ <b>Câble audio virtuel non détecté.</b> Pour envoyer les sons dans Discord, installe
-  <a href="https://vb-audio.com/Cable/" target="_blank" rel="noopener">VB-Audio Virtual Cable</a> (gratuit) :
-  télécharge, dézippe, clic droit sur <b>VBCABLE_Setup_x64.exe</b> → Exécuter en tant qu'administrateur → redémarre le PC.
-  Ensuite dans Discord : Paramètres vocaux → Périphérique d'entrée → <b>CABLE Output</b>.
-  <a href="#" id="rescanDevices">↻ J'ai installé, re-scanner</a>
+  ⚠️ <b>Câble audio virtuel non détecté.</b> Il permet d'envoyer tes sons et ta voix dans Discord.
+  <button class="testbtn" id="bannerInstall" style="margin:0 6px">⚡ Installer en 1 clic</button>
+  <a href="#" id="rescanDevices">↻ J'ai déjà installé, re-scanner</a>
 </div>
 
 <div class="layout">
+  <nav id="rail">
+    <button class="tab active" data-tab="sounds" title="Sons"><span class="ri">🎵</span><span class="rl">Sons</span></button>
+    <button class="tab" data-tab="voice" title="Voix"><span class="ri">🎙️</span><span class="rl">Voix</span></button>
+    <button class="tab" data-tab="replay" title="Instant replay"><span class="ri">⏺</span><span class="rl">Replay</span></button>
+    <button class="tab" data-tab="tts" title="Texte → voix"><span class="ri">🗣️</span><span class="rl">Dire</span></button>
+    <button class="tab" data-tab="guide" title="Guide & raccourcis"><span class="ri">📖</span><span class="rl">Guide</span></button>
+    <div class="rail-space"></div>
+    <button id="btnSettings" title="Réglages"><span class="ri">⚙️</span><span class="rl">Réglages</span></button>
+  </nav>
   <main id="main">
+    <!-- Checklist de premier lancement (disparaît une fois tout coché ou masquée) -->
+    <div id="onboard" class="onboard" style="display:none">
+      <div class="ob-head"><span>🚀 Bien démarrer</span>
+        <button class="cat-btn" id="onboardClose" title="Ne plus afficher">✕</button></div>
+      <div class="ob-step" id="obCable"><span class="ob-dot"></span>
+        <span>Installer le <b>câble audio virtuel</b> <span class="hint">(réglages ⚙️ → Sortie vers Discord)</span></span></div>
+      <div class="ob-step" id="obDiscord"><span class="ob-dot"></span>
+        <span>Configurer <b>Discord</b> : entrée = CABLE Output, suppression de bruit désactivée</span>
+        <button class="testbtn" id="obDiscordDone">✓ C'est fait</button></div>
+      <div class="ob-step" id="obPlay"><span class="ob-dot"></span>
+        <span>Jouer ton <b>premier son</b> (clique une tuile !)</span></div>
+    </div>
     <div id="content"></div>
 
     <div id="voiceView" style="display:none">
@@ -46,22 +72,452 @@
         </div>
         <div class="voice-monitor">
           <label class="switch"><input type="checkbox" id="swVoiceMon"><span class="sl"></span></label>
-          <div>
+          <div style="flex:1">
             <b>🎧 M'entendre (retour casque)</b>
             <div class="hint" style="margin-top:2px">
-              Renvoie ta voix modifiée dans ton casque pour la tester. Utilise le périphérique de
-              « Retour local » (réglages ⚙️). Pense à le couper en conversation réelle : t'entendre
-              avec un léger décalage peut gêner.
+              Renvoie ta voix transformée (effets <b>ou</b> IA) dans ton casque — même sans câble
+              virtuel ni Discord, pratique pour tester. Pense à le couper en conversation réelle :
+              t'entendre avec un léger décalage peut gêner.
+            </div>
+            <div class="vol" style="margin-top:8px">🔊
+              <input type="range" id="volVoiceMon" min="0" max="100" value="70">
+              <span id="volVoiceMonLbl">70%</span>
             </div>
           </div>
         </div>
       </div>
+
+      <!-- Section 1 : effets audio classiques -->
+      <div class="voice-section-title">🎛️ Modification voix</div>
+      <div class="hint" style="margin:-4px 0 12px">Effets audio instantanés (grave, robot, écho, radio…).</div>
       <div id="voiceGrid"></div>
+
+      <!-- Section 2 : voix IA temps réel via VCClient (moteur pro w-okada / Beatrice) -->
+      <div class="voice-section-title" style="margin-top:26px">🧠 IA personnalités <span class="badge ok" style="font-size:10px;vertical-align:middle">temps réel</span></div>
+      <div class="hint" style="margin:-4px 0 12px">
+        Transforme ta voix en une autre personne grâce à l'IA, avec un moteur professionnel
+        (VCClient / Beatrice) conçu pour le <b>temps réel fluide</b>.
+      </div>
+
+      <div id="vcPanel">
+        <!-- État : non installé (ou à mettre à niveau) -->
+        <div id="vcNotInstalled" class="ia-box">
+          <div><b>🧠 Moteur de voix IA à installer</b></div>
+          <div class="hint" style="margin-top:6px">
+            On télécharge le moteur complet (~3,5 Go, une seule fois) qui exploite ta <b>carte graphique</b>.
+            Il lit les voix au format <b>RVC</b> (fichiers <code>.pth</code>) : ton modèle Macron, mais aussi
+            des <b>milliers de voix (dont françaises)</b> à récupérer sur les sites ci-dessous.
+          </div>
+          <div id="vcUpgradeNote" class="voice-warn" style="display:none;margin-top:10px">
+            ⬆️ Une version légère (Beatrice) est déjà installée, mais elle ne lit pas les voix RVC.
+            Mets à niveau pour débloquer Macron et les voix françaises.
+          </div>
+          <button class="primary" id="vcInstallBtn" style="margin-top:10px">📥 Installer le moteur de voix IA</button>
+          <div class="hint" style="margin-top:10px">
+            📥 Où trouver des voix (format RVC <code>.pth</code>) :
+            <a href="https://voice-models.com/" target="_blank" rel="noopener">voice-models.com</a> ·
+            <a href="https://weights.gg/" target="_blank" rel="noopener">weights.gg</a> ·
+            <a href="https://rvc-models.com/" target="_blank" rel="noopener">rvc-models.com</a>
+            <br>Filtre par langue « French » pour les voix françaises.
+          </div>
+        </div>
+
+        <!-- État : installé -->
+        <div id="vcReady" class="ia-box" style="display:none">
+          <div><b>🧠 Voix IA</b> <span id="vcRunBadge" class="badge ko" style="font-size:10px">arrêté</span></div>
+          <div class="hint" style="margin-top:6px">
+            Parle avec la voix de <b>Macron, JDG, Squeezie…</b> — ta voix est convertie en direct
+            par l'IA (carte graphique) et envoyée dans Discord.
+          </div>
+          <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-top:12px">
+            <button class="primary" id="vcLaunchBtn">▶️ Lancer le moteur de voix IA</button>
+            <button class="testbtn danger-txt" id="vcStopBtn" style="display:none">⏹ Arrêter le moteur</button>
+          </div>
+
+          <!-- Panneau simplifié (pilote l'API du moteur) -->
+          <div id="vcSimple" style="display:none">
+            <div class="vc-sec">🎭 Choisis ta voix</div>
+            <div id="vcVoices" class="vc-voices"></div>
+
+            <div class="vc-controls">
+              <label class="replay-opt">🎚 Hauteur de voix
+                <span class="replay-dur-wrap">
+                  <input type="range" id="vcPitch" min="-24" max="24" step="1" value="0">
+                  <b id="vcPitchLbl">0</b>
+                </span>
+              </label>
+              <label class="replay-opt">🎤 Mon micro
+                <select id="vcMicSel"></select>
+              </label>
+              <label class="replay-opt">🎧 M'entendre (retour casque)
+                <select id="vcMonSel"></select>
+              </label>
+              <label class="replay-opt">⚡ Calcul
+                <select id="vcGpuSel"></select>
+              </label>
+            </div>
+
+            <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-top:14px">
+              <button class="primary" id="vcConvertBtn" style="font-size:15px;padding:12px 22px">🎙️ Activer ma voix IA</button>
+              <span id="vcPanelStatus" class="hint"></span>
+            </div>
+            <div class="hint" style="margin-top:8px">
+              La hauteur s'ajuste par voix : <b>-12</b> ≈ voix d'homme vers homme, <b>0</b> si les voix se ressemblent,
+              <b>+12</b> ≈ homme vers femme. Dans Discord, garde l'entrée <b>CABLE Output</b>.
+            </div>
+
+            <!-- Mode avancé : interface complète de VCClient (import de modèles…) -->
+            <details class="setup-guide" style="margin-top:14px">
+              <summary>🔧 Avancé : interface complète du moteur (importer de nouvelles voix…)</summary>
+              <div style="display:flex;gap:8px;flex-wrap:wrap;margin:10px 0">
+                <button class="testbtn" id="vcEmbedToggle">🖥️ Afficher l'interface complète ici</button>
+                <button class="testbtn" id="vcOpenBtn" title="Ouvrir dans le navigateur">🪟 Navigateur</button>
+                <button class="testbtn" id="vcReloadBtn" style="display:none" title="Recharger l'interface">↻ Recharger</button>
+              </div>
+              <div class="hint">Pour ajouter une voix : télécharge un modèle RVC (<code>.pth</code>) sur
+                <a href="https://voice-models.com/" target="_blank" rel="noopener">voice-models.com</a> /
+                <a href="https://weights.gg/" target="_blank" rel="noopener">weights.gg</a>,
+                puis importe-le dans un slot libre via l'interface complète. Il apparaîtra ensuite dans la grille ci-dessus.</div>
+            </details>
+            <div id="vcEmbed" class="vc-embed" style="display:none">
+              <webview id="vcFrame" src="about:blank" allowpopups></webview>
+            </div>
+          </div>
+        </div>
+
+        <!-- Journal / progression -->
+        <div id="vcLog" class="ia-log" style="display:none"></div>
+      </div>
+    </div>
+
+    <!-- ===== Onglet Replay ===== -->
+    <div id="replayView" style="display:none">
+      <div class="replay-hero">
+        <h2 style="margin:0">⏺ Instant Replay</h2>
+        <div class="hint" style="margin-top:4px;max-width:660px">
+          L'app garde en mémoire les dernières secondes, en <b>audio</b> ou en <b>vidéo+audio</b> (façon ShadowPlay).
+          Un moment drôle&nbsp;? Fige-le d'un clic ou avec <b>Ctrl+Alt+R</b> (même en jeu).
+        </div>
+        <div class="replay-modes">
+          <button class="rmode active" data-rmode="audio">🔊 Replay audio</button>
+          <button class="rmode" data-rmode="video">🎥 Replay vidéo</button>
+        </div>
+      </div>
+
+      <!-- ===== Mode AUDIO ===== -->
+      <div id="replayModeAudio" class="replay-layout">
+        <!-- Colonne gauche : capture -->
+        <div class="replay-main">
+          <div class="replay-capture">
+            <canvas id="replayWave"></canvas>
+            <button id="replayGrab" class="replay-grab" disabled>
+              <span class="replay-grab-ico">⏺</span>
+              <span class="replay-grab-txt">Activer la capture</span>
+            </button>
+            <div class="replay-meter"><div id="replayVu"></div></div>
+          </div>
+
+          <div class="replay-controls">
+            <label class="switch big"><input type="checkbox" id="swReplay2"><span class="sl"></span></label>
+            <span id="replayState2" class="replay-status">Capture inactive</span>
+          </div>
+
+          <div class="replay-opts">
+            <label class="replay-opt">🎙 Source
+              <select id="replaySource2">
+                <option value="mic">🎤 Mon micro</option>
+                <option value="monitor">🔊 Le son de mon PC (ce que j'entends)</option>
+              </select>
+            </label>
+            <label class="replay-opt">⏱ Durée capturée
+              <span class="replay-dur-wrap">
+                <input type="range" id="replayDur2" min="2" max="30" step="1" value="5">
+                <b id="replayDurLbl2">5 s</b>
+              </span>
+            </label>
+          </div>
+
+          <div class="replay-flags">
+            <label class="row">
+              <label class="switch"><input type="checkbox" id="replayAuto"><span class="sl"></span></label>
+              ⚡ Capturer dès le lancement de l'app (rien n'est enregistré sur le disque, juste les 30 dernières secondes en mémoire)
+            </label>
+            <label class="row">
+              <label class="switch"><input type="checkbox" id="replayAutoClip"><span class="sl"></span></label>
+              🔥 Clipper automatiquement les moments forts détectés
+            </label>
+          </div>
+
+          <!-- Moments forts détectés (pics d'intensité : rires, cris…) -->
+          <div id="replayMoments" class="replay-moments" style="display:none">
+            <div class="rm-title">🔥 Moments forts détectés <span class="hint">(pics de volume : rires, cris, explosions…)</span></div>
+            <div id="replayMomentsList"></div>
+          </div>
+
+          <div id="replayHint2" class="hint" style="margin-top:10px"></div>
+
+          <!-- ===== BÊTA : reconnaissance de sons par IA (YAMNet) ===== -->
+          <div class="beta-box">
+            <div class="beta-head">
+              <span>🧪 Reconnaissance de sons <span class="beta-tag">BÊTA</span></span>
+              <label class="switch"><input type="checkbox" id="yamSwitch"><span class="sl"></span></label>
+            </div>
+            <div class="hint" style="margin-top:4px">
+              Un modèle IA (YAMNet, 521 sons) écoute la capture et distingue <b>rire, applaudissements,
+              cri, musique, parole…</b> — bien plus fin que la détection par volume.
+            </div>
+
+            <!-- État : à installer -->
+            <div id="yamInstall" style="display:none;margin-top:10px">
+              <button class="testbtn" id="yamInstallBtn">📥 Activer la reconnaissance (~15 Mo, une fois)</button>
+              <div id="yamInstallLog" class="hint" style="margin-top:6px"></div>
+            </div>
+
+            <!-- Choix des catégories à détecter -->
+            <div id="yamCats" style="display:none;margin-top:10px">
+              <div class="hint" style="margin-bottom:6px">Cliquer un moment détecté le clippe (comme les moments forts).</div>
+              <div class="yam-chips" id="yamChips"></div>
+              <label class="row" style="margin-top:8px">
+                <label class="switch"><input type="checkbox" id="yamAutoClip"><span class="sl"></span></label>
+                🎯 Clipper automatiquement les sons cochés quand ils sont reconnus
+              </label>
+              <div class="yam-live" id="yamLive"></div>
+              <div id="yamEvents" class="replay-moments" style="display:none;margin-top:10px">
+                <div class="rm-title">🧠 Sons reconnus</div>
+                <div id="yamEventsList"></div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Colonne droite : mes enregistrements -->
+        <div class="replay-clips">
+          <div class="clips-head">
+            <span>🎞️ Mes enregistrements <span id="clipsCount" class="cat-count">0</span></span>
+            <button class="cat-btn" id="clipsRefresh" title="Rafraîchir">↻</button>
+          </div>
+          <div id="clipsList" class="clips-list"></div>
+        </div>
+      </div>
+
+      <!-- ===== Mode VIDÉO (ShadowPlay) ===== -->
+      <div id="replayModeVideo" class="replay-layout" style="display:none">
+        <!-- Colonne gauche : capture vidéo -->
+        <div class="replay-main">
+          <div class="vid-preview" id="vidPreviewWrap">
+            <video id="vidPreview" muted playsinline></video>
+            <div id="vidPreviewOff" class="vid-preview-off">🎥 Aperçu de la capture (apparaît une fois activée)</div>
+          </div>
+
+          <button id="vidGrab" class="replay-grab" disabled>
+            <span class="replay-grab-ico">🎬</span>
+            <span class="replay-grab-txt">Active la capture d'abord</span>
+          </button>
+
+          <div class="replay-controls">
+            <label class="switch big"><input type="checkbox" id="swVideo"><span class="sl"></span></label>
+            <span id="vidState" class="replay-status">Capture inactive</span>
+          </div>
+
+          <div class="replay-opts">
+            <label class="replay-opt">🔊 Audio du clip
+              <select id="vidAudio">
+                <option value="system">🔊 Son du PC seul</option>
+                <option value="mic">🎤 Mon micro seul</option>
+                <option value="both">🎧 Son du PC + micro</option>
+                <option value="none">🔇 Aucun (vidéo muette)</option>
+              </select>
+            </label>
+            <label class="replay-opt">⏱ Durée gardée
+              <span class="replay-dur-wrap">
+                <input type="range" id="vidDur" min="15" max="180" step="5" value="30">
+                <b id="vidDurLbl">30 s</b>
+              </span>
+            </label>
+            <label class="replay-opt">🖼️ Qualité
+              <select id="vidQuality">
+                <option value="720">720p (léger)</option>
+                <option value="1080" selected>1080p</option>
+                <option value="native">Native (écran)</option>
+              </select>
+            </label>
+          </div>
+
+          <div class="replay-flags">
+            <label class="row">
+              <label class="switch"><input type="checkbox" id="vidAuto"><span class="sl"></span></label>
+              ⚡ Démarrer la capture vidéo au lancement de l'app
+            </label>
+          </div>
+
+          <div id="vidHint" class="hint" style="margin-top:10px">
+            ⚠️ Le buffer vidéo continu consomme de la RAM et un peu de CPU (l'encodage tourne en tâche de fond).
+            Reste raisonnable au-delà d'1&nbsp;min à haute qualité.
+          </div>
+        </div>
+
+        <!-- Colonne droite : mes clips vidéo -->
+        <div class="replay-clips">
+          <div class="clips-head">
+            <span>🎬 Mes clips vidéo <span id="vidCount" class="cat-count">0</span></span>
+            <span style="display:flex;gap:2px">
+              <button class="cat-btn" id="vidReveal" title="Ouvrir le dossier des clips">📂</button>
+              <button class="cat-btn" id="vidRefresh" title="Rafraîchir">↻</button>
+            </span>
+          </div>
+          <div id="vidList" class="clips-list"></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Lecteur vidéo plein cadre (clic sur un clip) -->
+    <div id="vidPlayer" class="vid-player-overlay" style="display:none">
+      <div class="vid-player-box">
+        <div class="vid-player-head">
+          <span id="vidPlayerName"></span>
+          <button class="cat-btn" id="vidPlayerClose" title="Fermer (Échap)">✕</button>
+        </div>
+        <video id="vidPlayerEl" controls autoplay></video>
+      </div>
+    </div>
+
+    <!-- ===== Onglet Dire (TTS) ===== -->
+    <div id="ttsView" style="display:none">
+      <div class="replay-hero">
+        <h2 style="margin:0">🗣️ Dire</h2>
+        <div class="hint" style="margin-top:4px;max-width:640px">
+          Écris une phrase, elle est prononcée <b>dans Discord</b> par une voix naturelle.
+          Garde tes meilleures répliques comme des sons.
+        </div>
+      </div>
+
+      <div class="replay-layout">
+        <!-- Colonne gauche : composer -->
+        <div class="replay-main">
+          <textarea id="ttsText" class="tts-text" rows="3" maxlength="1000"
+            placeholder="Écris ce que tu veux faire dire… (Entrée = dire dans Discord)"></textarea>
+
+          <div class="tts-actions">
+            <button class="primary" id="ttsSay">🗣️ Dire dans Discord</button>
+            <button id="ttsPreview" title="Seulement dans ton casque">🎧 Écouter en privé</button>
+            <button id="ttsKeep" disabled title="Ajoute la dernière phrase dite comme un son (catégorie TTS)">💾 Garder comme son</button>
+          </div>
+
+          <div class="replay-opts" style="margin-top:14px">
+            <label class="replay-opt">🎤 Voix
+              <select id="ttsVoice"></select>
+            </label>
+            <label class="replay-opt">🧠 Puis convertir en…
+              <select id="ttsAiVoice"><option value="">— personne (voix TTS pure) —</option></select>
+            </label>
+            <label class="replay-opt">⏩ Vitesse
+              <span class="replay-dur-wrap">
+                <input type="range" id="ttsRate" min="50" max="200" step="5" value="100">
+                <b id="ttsRateLbl">100%</b>
+              </span>
+            </label>
+            <label class="replay-opt">🎚 Hauteur
+              <span class="replay-dur-wrap">
+                <input type="range" id="ttsPitch" min="-50" max="50" step="5" value="0">
+                <b id="ttsPitchLbl">0</b>
+              </span>
+            </label>
+          </div>
+          <div id="ttsStatus" class="hint" style="margin-top:10px"></div>
+        </div>
+
+        <!-- Colonne droite : historique + favoris -->
+        <div class="replay-clips">
+          <div class="clips-head">
+            <span>🕓 Dernières phrases</span>
+            <button class="cat-btn" id="ttsClear" title="Vider l'historique">🗑️</button>
+          </div>
+          <div id="ttsHistory" class="clips-list"></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ===== Onglet Guide ===== -->
+    <div id="guideView" style="display:none">
+      <div class="replay-hero">
+        <h2 style="margin:0">📖 Guide &amp; raccourcis</h2>
+        <div class="hint" style="margin-top:4px;max-width:640px">
+          Tout ce que l'app sait faire, et les touches pour aller plus vite.
+        </div>
+      </div>
+
+      <div class="guide-grid">
+        <div class="guide-card">
+          <h3>🌍 Raccourcis globaux <span class="hint" style="font-weight:400">(marchent partout, même en jeu ou dans Discord)</span></h3>
+          <div class="gk"><span><kbd>Ctrl</kbd>+<kbd>Alt</kbd>+<kbd>X</kbd></span> Stopper tous les sons</div>
+          <div class="gk"><span><kbd>Ctrl</kbd>+<kbd>Alt</kbd>+<kbd>R</kbd></span> Figer l'instant replay (les dernières secondes → un son)</div>
+          <div class="gk"><span><kbd>Ctrl</kbd>+<kbd>Alt</kbd>+<kbd>O</kbd></span> Afficher / cacher l'overlay in-game</div>
+          <div class="gk"><span><kbd>Ctrl</kbd>+<kbd>Alt</kbd>+<kbd>…</kbd></span> Tes sons assignés (clic droit sur un son → « Assigner une touche »)</div>
+          <div id="guideKeys" style="margin-top:8px"></div>
+        </div>
+
+        <div class="guide-card">
+          <h3>🎵 Onglet Sons</h3>
+          <div class="gk"><span>Clic</span> Jouer dans Discord (+ ton casque)</div>
+          <div class="gk"><span><kbd>Shift</kbd>+Clic</span> Écouter en privé (toi seul)</div>
+          <div class="gk"><span>Molette</span> Volume individuel du son survolé</div>
+          <div class="gk"><span>Clic droit</span> Menu : éditer ✂️, normaliser 📊, icône 🎨, touche ⌨️, renommer, favori ⭐…</div>
+          <div class="gk"><span>Glisser</span> Fichiers depuis l'explorateur = importer · une tuile vers une catégorie = déplacer</div>
+          <div class="gk"><span><kbd>Échap</kbd></span> Stopper les sons</div>
+        </div>
+
+        <div class="guide-card">
+          <h3>✂️ Éditeur audio <span class="hint" style="font-weight:400">(clic droit sur un son → Éditer)</span></h3>
+          <div class="gk"><span>Poignées</span> Glisse les bords pour découper le son</div>
+          <div class="gk"><span><kbd>Espace</kbd></span> Écouter la sélection</div>
+          <div class="gk"><span><kbd>Échap</kbd></span> Fermer sans enregistrer</div>
+          <div class="gk"><span>Fondus</span> Entrée/sortie en douceur (plus de « clac »)</div>
+        </div>
+
+        <div class="guide-card">
+          <h3>⏺ Onglet Replay</h3>
+          <div class="gk"><span>1.</span> Active la capture (micro ou son du PC, 2 à 30 s)</div>
+          <div class="gk"><span>2.</span> Moment drôle ? <kbd>Ctrl</kbd>+<kbd>Alt</kbd>+<kbd>R</kbd> ou le gros bouton</div>
+          <div class="gk"><span>3.</span> À droite : clic = écouter · ✂️ peaufiner · ➕ ranger dans tes Sons</div>
+        </div>
+
+        <div class="guide-card">
+          <h3>🗣️ Onglet Dire (texte → voix)</h3>
+          <div class="gk"><span><kbd>Entrée</kbd></span> Dire la phrase dans Discord</div>
+          <div class="gk"><span><kbd>Shift</kbd>+<kbd>Entrée</kbd></span> Aller à la ligne</div>
+          <div class="gk"><span>⭐</span> Épingler une phrase (gardée pour toujours, en haut)</div>
+          <div class="gk"><span>💾</span> Garder la phrase comme un vrai son (catégorie TTS)</div>
+        </div>
+
+        <div class="guide-card">
+          <h3>🎙️ Onglet Voix</h3>
+          <div class="gk"><span>Effets</span> Clique une tuile (Robot, Démon…) — ta voix est transformée en direct</div>
+          <div class="gk"><span>Voix IA</span> Lancer le moteur → choisir une voix (Macron, JDG…) → 🎙️ Activer</div>
+          <div class="gk"><span>💡</span> Ton micro classique se coupe tout seul quand la voix IA est active</div>
+        </div>
+
+        <div class="guide-card">
+          <h3>⚙️ Bien configurer Discord <span class="hint" style="font-weight:400">(une seule fois)</span></h3>
+          <div class="gk"><span>1.</span> Discord → Paramètres → Voix et vidéo</div>
+          <div class="gk"><span>2.</span> Entrée = <b>CABLE Output (VB-Audio)</b></div>
+          <div class="gk"><span>3.</span> Désactive la suppression de bruit (Krisp) — sinon Discord filtre tes memes !</div>
+          <div class="gk"><span>4.</span> Active « 🎤 Mon micro → Discord » dans les réglages ⚙️ pour parler en même temps</div>
+        </div>
+
+        <div class="guide-card">
+          <h3>💎 Astuces</h3>
+          <div class="gk"><span>🎮</span> Overlay : tes favoris toujours à l'écran, sans alt-tab (<kbd>Ctrl</kbd>+<kbd>Alt</kbd>+<kbd>O</kbd>)</div>
+          <div class="gk"><span>📊</span> Réglages → « Normaliser à l'import » : tous les sons au même volume</div>
+          <div class="gk"><span>🔗</span> Réglages → Exporter : partage toute ta bibliothèque en un fichier</div>
+          <div class="gk"><span>🎨</span> Réglages → Thème : 9 couleurs, dont AMOLED noir</div>
+          <div class="gk"><span>🗔</span> Fermer la fenêtre = l'app continue dans la zone de notification</div>
+        </div>
+      </div>
     </div>
   </main>
 
   <aside id="settings">
-    <h2>⚙️ Réglages</h2>
+    <h2>⚙️ Réglages <button class="cat-btn" id="settingsClose" title="Fermer (Échap)">✕</button></h2>
 
     <div class="card">
       <h3>
@@ -93,6 +549,20 @@
       <div class="vol">🎚 <input type="range" id="volMic" min="0" max="200" value="100"><span id="volMicLbl">100%</span></div>
       <div class="hint">Mixe ta voix avec les sons dans le câble virtuel : tu peux parler <b>et</b> jouer des sons.
       Laisse activé tant que le soundboard est ouvert.</div>
+
+      <div class="denoise-block">
+        <label class="row" style="margin-top:10px">
+          <label class="switch"><input type="checkbox" id="swDenoise"><span class="sl"></span></label>
+          <span><span class="dot" id="dotDenoise" style="background:var(--text-dim)"></span>
+          🛡️ Filtre anti-bruit <b>(façon Krisp)</b></span>
+        </label>
+        <div class="hint">Coupe respiration, souffle, clavier et bruit de fond de <b>ton micro</b>, sans jamais
+        toucher aux sons du soundboard. Remplace le Krisp de Discord (à laisser désactivé côté Discord).</div>
+        <div id="denoiseOpts" style="display:none">
+          <div class="vol">💪 <input type="range" id="denoiseStrength" min="20" max="100" value="60"><span id="denoiseStrengthLbl">60%</span></div>
+          <div class="hint" style="opacity:.7">Plus fort = coupe plus de bruit, mais peut rogner les débuts de mots si tu parles doucement.</div>
+        </div>
+      </div>
     </div>
 
     <div class="card">
@@ -112,6 +582,10 @@
         Couper le son précédent quand j'en lance un nouveau
       </label>
       <label class="row">
+        <label class="switch"><input type="checkbox" id="swNorm"><span class="sl"></span></label>
+        Normaliser le volume des sons importés (même niveau sonore partout)
+      </label>
+      <label class="row">
         <label class="switch"><input type="checkbox" id="swTray" checked><span class="sl"></span></label>
         Réduire dans la zone de notification à la fermeture
       </label>
@@ -119,6 +593,8 @@
         <label class="switch"><input type="checkbox" id="swLogin"><span class="sl"></span></label>
         Démarrer avec Windows
       </label>
+      <button class="testbtn" id="btnOverlay" style="margin-top:8px">🎮 Overlay in-game <span style="opacity:.6">(Ctrl+Alt+O)</span></button>
+      <div class="hint">Mini-fenêtre toujours au premier plan avec tes favoris — joue des sons sans quitter ton jeu.</div>
     </div>
 
     <div class="card">
@@ -128,6 +604,38 @@
         <button class="testbtn" id="openDir">📂 Ouvrir</button>
         <button class="testbtn" id="changeDir">Changer…</button>
       </div>
+    </div>
+
+    <!-- Thème de couleur -->
+    <div class="card">
+      <h3><span>🎨 Thème de couleur</span></h3>
+      <div class="theme-row" id="themeRow"></div>
+    </div>
+
+    <!-- Export / import de la bibliothèque -->
+    <div class="card">
+      <h3><span>🔗 Partager ma bibliothèque</span></h3>
+      <div class="hint">Exporte tous tes sons + icônes + réglages dans un fichier
+        <code>.soundboard</code> à envoyer à un ami. À l'import, sa bibliothèque s'ajoute à la tienne.</div>
+      <div style="display:flex;gap:8px;margin-top:8px;flex-wrap:wrap">
+        <button class="testbtn" id="btnExport">📤 Exporter</button>
+        <button class="testbtn" id="btnImport">📥 Importer</button>
+      </div>
+    </div>
+
+    <!-- Visualiseur audio temps réel -->
+    <div class="card">
+      <h3>
+        <span>📊 Visualiseur audio <span id="vizBadge" class="badge ko" style="font-size:10px">arrêté</span></span>
+        <label class="switch"><input type="checkbox" id="swViz"><span class="sl"></span></label>
+      </h3>
+      <div class="hint">Vérifie que le signal passe bien vers Discord. Choisis la source à surveiller :</div>
+      <select id="vizSource" style="margin-top:6px">
+        <option value="cable">🔌 Sortie Discord (CABLE)</option>
+        <option value="mic">🎤 Mon micro</option>
+      </select>
+      <canvas id="vizCanvas" style="width:100%;height:70px;margin-top:8px;background:var(--bg-dark);border:1px solid var(--border);border-radius:8px;display:block"></canvas>
+      <div class="vu"><div class="vu-bar"><div id="vuFill"></div></div><span id="vuLbl">—</span></div>
     </div>
 
     <details class="help card">
@@ -150,7 +658,7 @@
   <span><span class="dot" id="dotCable" style="background:var(--red)"></span><span id="statCable">Câble virtuel : non détecté</span></span>
   <span><span class="dot" id="dotMic" style="background:var(--text-dim)"></span><span id="statMic">Micro → Discord : inactif</span></span>
   <span><span class="dot" id="dotVoice" style="background:var(--text-dim)"></span><span id="statVoice">Voix : normale</span></span>
-  <span style="margin-left:auto">💡 Glisse des fichiers audio ici pour les ajouter</span>
+  <span style="margin-left:auto">💡 Shift+clic = écoute privée · molette = volume du son · glisse tes fichiers ici</span>
 </footer>
 
 <div id="dropOverlay">📥 Dépose tes sons ici !</div>
@@ -219,9 +727,94 @@
   </div>
 </div>
 
+<!-- Éditeur de découpe audio -->
+<div id="editModal">
+  <div class="edit-box">
+    <div class="edit-head">
+      <div>
+        <div class="modal-title" id="editName">Découper le son</div>
+        <div class="modal-sub">Glisse les poignées ou saisis les temps. La partie colorée sera conservée.</div>
+      </div>
+      <button id="editClose" title="Fermer">✕</button>
+    </div>
+
+    <!-- Étape téléchargement de ffmpeg si absent -->
+    <div id="editSetup" class="edit-setup" style="display:none">
+      <div class="edit-setup-inner">
+        <div style="font-size:34px">✂️</div>
+        <p>L'éditeur a besoin d'un petit outil de découpe (ffmpeg, ~30 Mo). Téléchargement unique.</p>
+        <button class="primary" id="editEnsureBtn">⬇️ Télécharger l'outil</button>
+        <div class="edit-setup-log" id="editSetupLog" style="display:none"></div>
+      </div>
+    </div>
+
+    <!-- Éditeur -->
+    <div id="editMain" style="display:none">
+      <div class="wave-wrap">
+        <canvas id="waveCanvas"></canvas>
+        <div class="wave-region" id="waveRegion"></div>
+        <div class="wave-handle start" id="handleStart"><span></span></div>
+        <div class="wave-handle end" id="handleEnd"><span></span></div>
+        <div class="wave-cursor" id="waveCursor"></div>
+      </div>
+
+      <div class="edit-times">
+        <label>Début <input type="text" id="editStart" value="0:00.00"></label>
+        <label>Fin <input type="text" id="editEnd" value="0:00.00"></label>
+        <span class="edit-dur">Durée : <b id="editDur">0:00.00</b></span>
+      </div>
+
+      <div class="edit-fades">
+        <label>Fondu entrée <input type="range" id="editFadeIn" min="0" max="2000" step="50" value="0"><span id="editFadeInLbl">0 ms</span></label>
+        <label>Fondu sortie <input type="range" id="editFadeOut" min="0" max="2000" step="50" value="0"><span id="editFadeOutLbl">0 ms</span></label>
+      </div>
+
+      <div class="edit-actions">
+        <button class="testbtn" id="editPlay">▶️ Écouter la sélection</button>
+        <div style="flex:1"></div>
+        <button class="testbtn" id="editSaveCopy">📄 Enregistrer une copie</button>
+        <button class="primary danger-txt" id="editSaveReplace">💾 Remplacer l'original</button>
+      </div>
+      <div class="hint" id="editWorking" style="display:none;margin-top:8px">⏳ Découpe en cours…</div>
+    </div>
+  </div>
+</div>
+
+<!-- Assistant d'installation du câble audio (au démarrage si absent) -->
+<div id="setupModal">
+  <div class="setup-box">
+    <div class="setup-hero">🎙️</div>
+    <h2 id="setupTitle">Bienvenue dans Soundboard&nbsp;!</h2>
+    <p id="setupIntro" class="setup-p">
+      Pour envoyer tes sons et ta voix dans Discord, l'application a besoin d'un petit
+      <b>câble audio virtuel</b> (VB-Audio, gratuit). On peut l'installer pour toi en un clic.
+    </p>
+
+    <div id="setupSteps" class="setup-steps" style="display:none">
+      <div class="setup-log" id="setupLog"></div>
+    </div>
+
+    <div id="setupReboot" class="setup-reboot" style="display:none">
+      ✅ <b>Câble installé&nbsp;!</b> Un <b>redémarrage</b> du PC est nécessaire pour l'activer.
+      L'app se rouvrira ensuite prête à l'emploi.
+    </div>
+
+    <div class="setup-actions">
+      <button id="setupInstallBtn" class="primary big">⚡ Installer le câble audio</button>
+      <button id="setupRebootBtn" class="primary big" style="display:none">🔄 Redémarrer maintenant</button>
+      <button id="setupLater" class="ghost">Plus tard</button>
+    </div>
+    <p class="setup-fine">
+      Une fenêtre Windows demandera l'autorisation (administrateur) — c'est normal, accepte-la.
+      <br>Tu peux aussi <a href="https://vb-audio.com/Cable/" target="_blank" rel="noopener">l'installer manuellement</a>.
+    </p>
+  </div>
+</div>
+
 <div id="toast"></div>
 
 <script src="../vendor/SoundTouchNode.js"></script>
+<script src="../vendor/ort/ort.min.js"></script>
 <script src="voicefx.js"></script>
 <script src="renderer.js"></script>
 </body>

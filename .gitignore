@@ -12,3 +12,36 @@ Desktop.ini
 
 # Réglages locaux de l'utilisateur (chemins machine-spécifiques)
 _app/node_modules/.cache/
+
+# Backend Voix IA : environnement Python (plusieurs Go, réinstallable via setup.ps1)
+_app/ia/.venv310/
+_app/ia/__pycache__/
+_app/ia/_*.wav
+_app/ia/_*.txt
+
+# Modèles de voix IA (volumineux : .pth + .index) — restent en local
+Voix IA/
+
+# Bibliothèque de sons personnelle (perso, non partagée) — le dépôt ne suit que le CODE.
+# On ignore les fichiers audio À LA RACINE et dans les catégories (sous-dossiers de
+# 1er niveau), mais PAS ceux de _app/ (assets du code : vendor/…).
+/*.mp3
+/*.wav
+/*.ogg
+/*.opus
+/*.m4a
+/*.aac
+/*.flac
+/*.webm
+/*/*.mp3
+/*/*.wav
+/*/*.ogg
+/*/*.opus
+/*/*.m4a
+/*/*.aac
+/*/*.flac
+/*/*.webm
+/_icones/
+/Enregistrements/
+/clips-video/
+
