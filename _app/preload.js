@@ -32,7 +32,7 @@ contextBridge.exposeInMainWorld('sb', {
   getInfo: () => ipcRenderer.invoke('get-info'),
   chooseSoundsDir: () => ipcRenderer.invoke('choose-sounds-dir'),
   openSoundsFolder: () => ipcRenderer.invoke('open-sounds-folder'),
-  setGlobalHotkeys: (map, enabled) => ipcRenderer.invoke('set-global-hotkeys', map, enabled),
+  setGlobalHotkeys: (map, enabled, replayGrab) => ipcRenderer.invoke('set-global-hotkeys', map, enabled, replayGrab),
   setOpenAtLogin: (v) => ipcRenderer.invoke('set-open-at-login', v),
   setMinimizeToTray: (v) => ipcRenderer.invoke('set-minimize-to-tray', v),
   // URL de lecture pour un fichier son (protocole custom snd://)

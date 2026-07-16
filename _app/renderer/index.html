@@ -40,8 +40,8 @@
     <button class="tab" data-tab="voice" title="Voix"><span class="ri">🎙️</span><span class="rl">Voix</span></button>
     <button class="tab" data-tab="replay" title="Instant replay"><span class="ri">⏺</span><span class="rl">Replay</span></button>
     <button class="tab" data-tab="tts" title="Texte → voix"><span class="ri">🗣️</span><span class="rl">Dire</span></button>
-    <button class="tab" data-tab="guide" title="Guide & raccourcis"><span class="ri">📖</span><span class="rl">Guide</span></button>
     <div class="rail-space"></div>
+    <button class="tab" data-tab="guide" title="Guide & raccourcis"><span class="ri">📖</span><span class="rl">Guide</span></button>
     <button id="btnSettings" title="Réglages"><span class="ri">⚙️</span><span class="rl">Réglages</span></button>
   </nav>
   <main id="main">
@@ -196,7 +196,13 @@
         <h2 style="margin:0">⏺ Instant Replay</h2>
         <div class="hint" style="margin-top:4px;max-width:660px">
           L'app garde en mémoire les dernières secondes, en <b>audio</b> ou en <b>vidéo+audio</b> (façon ShadowPlay).
-          Un moment drôle&nbsp;? Fige-le d'un clic ou avec <b>Ctrl+Alt+R</b> (même en jeu).
+          Un moment drôle&nbsp;? Fige-le d'un clic ou avec un raccourci (même en jeu).
+        </div>
+        <div class="replay-grabkey">
+          <span>⌨️ Raccourci « figer les dernières secondes »&nbsp;:</span>
+          <button id="replayGrabKeyBtn" class="testbtn" title="Cliquer puis appuyer sur la touche voulue">²</button>
+          <button id="replayGrabKeyReset" class="cat-btn" title="Remettre la touche par défaut (« ² » en haut à gauche)">↺</button>
+          <span class="hint">+ <b>Ctrl+Alt+R</b> marche toujours</span>
         </div>
         <div class="replay-modes">
           <button class="rmode active" data-rmode="audio">🔊 Replay audio</button>

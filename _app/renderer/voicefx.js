@@ -11,21 +11,128 @@
 
 /* ========== Définition des presets ========== */
 // type d'effets : 'robot', 'reverb', 'echo', 'radio', 'distortion', 'tremolo'
+// color = teinte de la carte (halo + sélection) · desc = sous-titre parlant ·
+// svg  = icône dessinée sur mesure (contenu d'un viewBox 0 0 48 48)
 const VOICE_PRESETS = [
-  { id: 'none',      name: 'Normale',        emoji: '🎤', pitch: 0,  effects: [] },
-  { id: 'deep',      name: 'Grave / Monstre',emoji: '👹', pitch: -6, effects: [] },
-  { id: 'demon',     name: 'Démon',          emoji: '😈', pitch: -9, effects: [{ t: 'reverb', mix: 0.35, seconds: 2.2 }, { t: 'distortion', amount: 12 }] },
-  { id: 'chipmunk',  name: 'Aigüe / Écureuil',emoji: '🐿️', pitch: 7,  effects: [] },
-  { id: 'child',     name: 'Enfant',         emoji: '🧒', pitch: 4,  effects: [] },
-  { id: 'robot',     name: 'Robot',          emoji: '🤖', pitch: 0,  effects: [{ t: 'robot', freq: 60 }, { t: 'distortion', amount: 4 }] },
-  { id: 'cyborg',    name: 'Cyborg',         emoji: '🦾', pitch: -3, effects: [{ t: 'robot', freq: 30 }, { t: 'reverb', mix: 0.25, seconds: 1.2 }] },
-  { id: 'cathedral', name: 'Cathédrale',     emoji: '⛪', pitch: 0,  effects: [{ t: 'reverb', mix: 0.55, seconds: 4.5 }] },
-  { id: 'cave',      name: 'Grotte / Écho',  emoji: '🕳️', pitch: -2, effects: [{ t: 'echo', time: 0.28, feedback: 0.45, mix: 0.5 }] },
-  { id: 'radio',     name: 'Radio',          emoji: '📻', pitch: 0,  effects: [{ t: 'radio' }, { t: 'distortion', amount: 6 }] },
-  { id: 'phone',     name: 'Téléphone',      emoji: '📞', pitch: 0,  effects: [{ t: 'phone' }] },
-  { id: 'walkie',    name: 'Talkie-walkie',  emoji: '🔊', pitch: 0,  effects: [{ t: 'radio' }, { t: 'distortion', amount: 10 }, { t: 'tremolo', rate: 0 }] },
-  { id: 'alien',     name: 'Alien',          emoji: '👽', pitch: 3,  effects: [{ t: 'tremolo', rate: 6, depth: 0.6 }, { t: 'reverb', mix: 0.3, seconds: 1.5 }] },
-  { id: 'ghost',     name: 'Fantôme',        emoji: '👻', pitch: -4, effects: [{ t: 'tremolo', rate: 4, depth: 0.5 }, { t: 'reverb', mix: 0.5, seconds: 3 }] },
+  { id: 'none', name: 'Normale', emoji: '🎤', pitch: 0, effects: [],
+    color: '#5865f2', desc: 'Ta vraie voix',
+    svg: '<rect x="18" y="6" width="12" height="20" rx="6" fill="#5865f2"/>' +
+         '<line x1="21" y1="12" x2="27" y2="12" stroke="#c7d0ff" stroke-width="2" stroke-linecap="round"/>' +
+         '<line x1="21" y1="17" x2="27" y2="17" stroke="#c7d0ff" stroke-width="2" stroke-linecap="round"/>' +
+         '<path d="M12 22a12 12 0 0 0 24 0" fill="none" stroke="#8ea1e1" stroke-width="3" stroke-linecap="round"/>' +
+         '<line x1="24" y1="34" x2="24" y2="39" stroke="#8ea1e1" stroke-width="3" stroke-linecap="round"/>' +
+         '<rect x="16" y="39" width="16" height="3.5" rx="1.75" fill="#8ea1e1"/>' },
+  { id: 'deep', name: 'Grave / Monstre', emoji: '👹', pitch: -6, effects: [],
+    color: '#e2593b', desc: 'Très grave',
+    svg: '<path d="M12 7l8 7-10 3z" fill="#b23c17"/><path d="M36 7l-8 7 10 3z" fill="#b23c17"/>' +
+         '<rect x="10" y="13" width="28" height="26" rx="9" fill="#e2593b"/>' +
+         '<circle cx="18.5" cy="24" r="3.6" fill="#fff"/><circle cx="29.5" cy="24" r="3.6" fill="#fff"/>' +
+         '<circle cx="18.5" cy="24.8" r="1.6" fill="#1a1c20"/><circle cx="29.5" cy="24.8" r="1.6" fill="#1a1c20"/>' +
+         '<path d="M14 18.5l7 2.5M34 18.5l-7 2.5" stroke="#7f2b12" stroke-width="3" stroke-linecap="round"/>' +
+         '<path d="M16 31.5h16v2.5a2.5 2.5 0 0 1-2.5 2.5h-11a2.5 2.5 0 0 1-2.5-2.5z" fill="#5e1f0c"/>' +
+         '<path d="M18.5 31.5l1.9 4 1.9-4zM25.7 31.5l1.9 4 1.9-4z" fill="#fff"/>' },
+  { id: 'demon', name: 'Démon', emoji: '😈', pitch: -9, effects: [{ t: 'reverb', mix: 0.35, seconds: 2.2 }, { t: 'distortion', amount: 12 }],
+    color: '#ef4444', desc: 'Grave + distorsion',
+    svg: '<path d="M13 5c-1.5 5 .5 9 5 11l4-5c-4-1.5-7-3-9-6z" fill="#991b1b"/>' +
+         '<path d="M35 5c1.5 5-.5 9-5 11l-4-5c4-1.5 7-3 9-6z" fill="#991b1b"/>' +
+         '<path d="M24 11c8.5 0 14.5 5.3 14.5 13.5C38.5 33.7 31.5 39 24 39S9.5 33.7 9.5 24.5C9.5 16.3 15.5 11 24 11z" fill="#ef4444"/>' +
+         '<path d="M14.5 22.5l7.5 1.2-6.3 3.2z" fill="#fde047"/><path d="M33.5 22.5l-7.5 1.2 6.3 3.2z" fill="#fde047"/>' +
+         '<path d="M17 30.5q7 4.8 14 0l-1.4 3.2q-5.6 3.2-11.2 0z" fill="#7f1d1d"/>' +
+         '<path d="M19.2 31.6l1.7 3.4 1.7-3zM28.8 31.6l-1.7 3.4-1.7-3z" fill="#fff"/>' +
+         '<path d="M21.8 39h4.4L24 44z" fill="#991b1b"/>' },
+  { id: 'chipmunk', name: 'Aigüe / Écureuil', emoji: '🐿️', pitch: 7, effects: [],
+    color: '#f59e0b', desc: 'Très aigu',
+    svg: '<circle cx="14" cy="12" r="6" fill="#d97706"/><circle cx="34" cy="12" r="6" fill="#d97706"/>' +
+         '<circle cx="14" cy="12" r="2.6" fill="#fbbf24"/><circle cx="34" cy="12" r="2.6" fill="#fbbf24"/>' +
+         '<ellipse cx="24" cy="26" rx="15" ry="14" fill="#f59e0b"/>' +
+         '<circle cx="13.5" cy="28" r="4" fill="#fbbf24"/><circle cx="34.5" cy="28" r="4" fill="#fbbf24"/>' +
+         '<circle cx="18" cy="22" r="2.2" fill="#1a1c20"/><circle cx="30" cy="22" r="2.2" fill="#1a1c20"/>' +
+         '<circle cx="24" cy="27.5" r="2" fill="#78350f"/>' +
+         '<rect x="20.4" y="30.5" width="3.4" height="6.5" rx="1.2" fill="#fff"/>' +
+         '<rect x="24.2" y="30.5" width="3.4" height="6.5" rx="1.2" fill="#fff"/>' },
+  { id: 'child', name: 'Enfant', emoji: '🧒', pitch: 4, effects: [],
+    color: '#fb7185', desc: 'Aigu léger',
+    svg: '<circle cx="24" cy="26" r="15" fill="#ffcdb8"/>' +
+         '<path d="M24 11q-1.5-5.5 4.5-6.5" fill="none" stroke="#9a5b3c" stroke-width="3" stroke-linecap="round"/>' +
+         '<circle cx="18.5" cy="24" r="2.4" fill="#1a1c20"/><circle cx="29.5" cy="24" r="2.4" fill="#1a1c20"/>' +
+         '<circle cx="14" cy="29" r="3" fill="#fb7185" opacity=".55"/><circle cx="34" cy="29" r="3" fill="#fb7185" opacity=".55"/>' +
+         '<path d="M19 31.5q5 4.5 10 0" fill="none" stroke="#b45309" stroke-width="2.6" stroke-linecap="round"/>' },
+  { id: 'robot', name: 'Robot', emoji: '🤖', pitch: 0, effects: [{ t: 'robot', freq: 60 }, { t: 'distortion', amount: 4 }],
+    color: '#22d3ee', desc: 'Vibration métallique',
+    svg: '<line x1="24" y1="5" x2="24" y2="9" stroke="#67e8f9" stroke-width="3" stroke-linecap="round"/>' +
+         '<circle cx="24" cy="4.5" r="2.5" fill="#a5f3fc"/>' +
+         '<rect x="5.5" y="18" width="4" height="9" rx="2" fill="#0e7490"/><rect x="38.5" y="18" width="4" height="9" rx="2" fill="#0e7490"/>' +
+         '<rect x="9" y="9" width="30" height="27" rx="7" fill="#0891b2"/>' +
+         '<rect x="12.5" y="13" width="23" height="12" rx="5" fill="#164e63"/>' +
+         '<circle cx="18.5" cy="19" r="3.4" fill="#a5f3fc"/><circle cx="29.5" cy="19" r="3.4" fill="#a5f3fc"/>' +
+         '<rect x="16" y="28.5" width="16" height="4.5" rx="2.25" fill="#164e63"/>' +
+         '<line x1="20.5" y1="28.5" x2="20.5" y2="33" stroke="#67e8f9" stroke-width="1.6"/>' +
+         '<line x1="24" y1="28.5" x2="24" y2="33" stroke="#67e8f9" stroke-width="1.6"/>' +
+         '<line x1="27.5" y1="28.5" x2="27.5" y2="33" stroke="#67e8f9" stroke-width="1.6"/>' },
+  { id: 'cyborg', name: 'Cyborg', emoji: '🦾', pitch: -3, effects: [{ t: 'robot', freq: 30 }, { t: 'reverb', mix: 0.25, seconds: 1.2 }],
+    color: '#94a3b8', desc: 'Métal + écho',
+    svg: '<rect x="10" y="9" width="28" height="30" rx="8" fill="#94a3b8"/>' +
+         '<path d="M24 9h6a8 8 0 0 1 8 8v14a8 8 0 0 1-8 8h-6z" fill="#475569"/>' +
+         '<circle cx="34.5" cy="13.5" r="1.2" fill="#cbd5e1"/><circle cx="34.5" cy="34.5" r="1.2" fill="#cbd5e1"/>' +
+         '<circle cx="17.5" cy="22" r="3.2" fill="#f8fafc"/><circle cx="17.5" cy="22" r="1.5" fill="#0f172a"/>' +
+         '<circle cx="30.5" cy="22" r="4.8" fill="none" stroke="#f87171" stroke-width="1.8"/>' +
+         '<circle cx="30.5" cy="22" r="2.2" fill="#ef4444"/>' +
+         '<line x1="15.5" y1="32" x2="27" y2="32" stroke="#1e293b" stroke-width="2.6" stroke-linecap="round"/>' },
+  { id: 'cathedral', name: 'Cathédrale', emoji: '⛪', pitch: 0, effects: [{ t: 'reverb', mix: 0.55, seconds: 4.5 }],
+    color: '#eab308', desc: 'Grande réverb',
+    svg: '<path d="M10 41V23l5-5 5 5v18z" fill="#a16207"/><path d="M28 41V23l5-5 5 5v18z" fill="#a16207"/>' +
+         '<rect x="13.7" y="26" width="2.6" height="5" rx="1.2" fill="#fde047"/><rect x="31.7" y="26" width="2.6" height="5" rx="1.2" fill="#fde047"/>' +
+         '<path d="M17 41V17l7-8.5 7 8.5v24z" fill="#eab308"/>' +
+         '<line x1="24" y1="3" x2="24" y2="8.5" stroke="#fde047" stroke-width="2.4" stroke-linecap="round"/>' +
+         '<line x1="21.6" y1="5.2" x2="26.4" y2="5.2" stroke="#fde047" stroke-width="2.4" stroke-linecap="round"/>' +
+         '<circle cx="24" cy="21" r="3.2" fill="#fef3c7"/>' +
+         '<path d="M20.5 41v-6.5a3.5 3.5 0 0 1 7 0V41z" fill="#713f12"/>' },
+  { id: 'cave', name: 'Grotte / Écho', emoji: '🕳️', pitch: -2, effects: [{ t: 'echo', time: 0.28, feedback: 0.45, mix: 0.5 }],
+    color: '#a1887f', desc: 'Écho répété',
+    svg: '<path d="M7 41V29C7 18 14.5 10.5 24 10.5S41 18 41 29v12h-8v-9.5a9 9 0 0 0-18 0V41z" fill="#8d6e63"/>' +
+         '<path d="M12 15.5l3.5 3M36 15.5l-3.5 3" stroke="#6d4c41" stroke-width="2.4" stroke-linecap="round"/>' +
+         '<rect x="22.7" y="27" width="2.6" height="10" rx="1.3" fill="#efe6e1"/>' +
+         '<rect x="18.2" y="30" width="2.6" height="7" rx="1.3" fill="#cbb8ae"/>' +
+         '<rect x="27.2" y="30" width="2.6" height="7" rx="1.3" fill="#cbb8ae"/>' },
+  { id: 'radio', name: 'Radio', emoji: '📻', pitch: 0, effects: [{ t: 'radio' }, { t: 'distortion', amount: 6 }],
+    color: '#a855f7', desc: 'Vieux poste FM',
+    svg: '<line x1="30" y1="16" x2="38" y2="6.5" stroke="#d8b4fe" stroke-width="2.6" stroke-linecap="round"/>' +
+         '<circle cx="38.5" cy="6" r="1.8" fill="#d8b4fe"/>' +
+         '<rect x="7" y="16" width="34" height="24" rx="5" fill="#9333ea"/>' +
+         '<rect x="7" y="16" width="34" height="5" rx="2.5" fill="#7e22ce"/>' +
+         '<circle cx="18" cy="30" r="6.5" fill="#6b21a8"/><circle cx="18" cy="30" r="3" fill="#d8b4fe"/>' +
+         '<circle cx="32" cy="27" r="3.8" fill="#e9d5ff"/>' +
+         '<line x1="32" y1="27" x2="34.3" y2="24.7" stroke="#6b21a8" stroke-width="1.8" stroke-linecap="round"/>' +
+         '<rect x="27.5" y="33" width="9" height="3" rx="1.5" fill="#6b21a8"/>' },
+  { id: 'phone', name: 'Téléphone', emoji: '📞', pitch: 0, effects: [{ t: 'phone' }],
+    color: '#34d399', desc: 'Son compressé',
+    svg: '<path d="M10.5 13.5c-2.9 2.9-2.9 7.6 0 10.5l13.5 13.5c2.9 2.9 7.6 2.9 10.5 0l2-2c1.7-1.7 1.4-4.6-.7-5.9l-4.6-2.9c-1.5-1-3.5-.8-4.8.5l-.8.8-6.6-6.6.8-.8c1.3-1.3 1.5-3.3.5-4.8l-2.9-4.6c-1.3-2.1-4.2-2.4-5.9-.7z" fill="#10b981"/>' +
+         '<path d="M30 11a8.5 8.5 0 0 1 7 7" fill="none" stroke="#6ee7b7" stroke-width="2.6" stroke-linecap="round"/>' +
+         '<path d="M31.5 4.5A15 15 0 0 1 43.5 16" fill="none" stroke="#6ee7b7" stroke-width="2.6" stroke-linecap="round"/>' },
+  { id: 'walkie', name: 'Talkie-walkie', emoji: '🔊', pitch: 0, effects: [{ t: 'radio' }, { t: 'distortion', amount: 10 }, { t: 'tremolo', rate: 0 }],
+    color: '#84cc16', desc: 'Radio saturée',
+    svg: '<rect x="14" y="4" width="3.2" height="10" rx="1.6" fill="#4d7c0f"/>' +
+         '<path d="M25 9a8 8 0 0 1 5 4" fill="none" stroke="#bef264" stroke-width="2.2" stroke-linecap="round"/>' +
+         '<path d="M27.5 4.5a13 13 0 0 1 8 6.5" fill="none" stroke="#bef264" stroke-width="2.2" stroke-linecap="round"/>' +
+         '<rect x="10" y="12.5" width="20" height="30" rx="5" fill="#65a30d"/>' +
+         '<line x1="14.5" y1="18.5" x2="25.5" y2="18.5" stroke="#365314" stroke-width="2.2" stroke-linecap="round"/>' +
+         '<line x1="14.5" y1="22.5" x2="25.5" y2="22.5" stroke="#365314" stroke-width="2.2" stroke-linecap="round"/>' +
+         '<line x1="14.5" y1="26.5" x2="25.5" y2="26.5" stroke="#365314" stroke-width="2.2" stroke-linecap="round"/>' +
+         '<rect x="14" y="31.5" width="12" height="6.5" rx="2.2" fill="#365314"/>' +
+         '<circle cx="34" cy="20" r="2.6" fill="#a3e635"/>' },
+  { id: 'alien', name: 'Alien', emoji: '👽', pitch: 3, effects: [{ t: 'tremolo', rate: 6, depth: 0.6 }, { t: 'reverb', mix: 0.3, seconds: 1.5 }],
+    color: '#4ade80', desc: 'Modulation spatiale',
+    svg: '<path d="M24 5c9.5 0 16 6.5 16 15 0 10-9.5 19.5-16 23C17.5 39.5 8 30 8 20 8 11.5 14.5 5 24 5z" fill="#4ade80"/>' +
+         '<path d="M13 19.5c5-3.2 9.5-1.6 10.5 3.2-4.2 3.2-9.5 1-10.5-3.2z" fill="#052e16"/>' +
+         '<path d="M35 19.5c-5-3.2-9.5-1.6-10.5 3.2 4.2 3.2 9.5 1 10.5-3.2z" fill="#052e16"/>' +
+         '<circle cx="22.6" cy="30.5" r=".9" fill="#052e16"/><circle cx="25.4" cy="30.5" r=".9" fill="#052e16"/>' +
+         '<path d="M21 35h6" fill="none" stroke="#052e16" stroke-width="2" stroke-linecap="round"/>' },
+  { id: 'ghost', name: 'Fantôme', emoji: '👻', pitch: -4, effects: [{ t: 'tremolo', rate: 4, depth: 0.5 }, { t: 'reverb', mix: 0.5, seconds: 3 }],
+    color: '#a78bfa', desc: 'Tremblant + réverb',
+    svg: '<path d="M24 5c-9 0-14.5 7-14.5 15.5V42l4.8-4 4.9 4 4.8-4 4.9 4 4.8-4 4.8 4V20.5C38.5 12 33 5 24 5z" fill="#ddd6fe"/>' +
+         '<ellipse cx="19" cy="20" rx="2.4" ry="3.4" fill="#312e81"/><ellipse cx="29" cy="20" rx="2.4" ry="3.4" fill="#312e81"/>' +
+         '<ellipse cx="24" cy="28.5" rx="2.6" ry="3.4" fill="#312e81"/>' +
+         '<circle cx="15" cy="14" r="4.5" fill="#fff" opacity=".35"/>' },
 ];
 
 /* ========== Générateurs de nœuds d'effets ========== */

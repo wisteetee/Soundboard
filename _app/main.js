@@ -757,9 +757,10 @@ function watchSounds() {
 }
 
 /* ---------- Raccourcis globaux ---------- */
-function registerHotkeys(map, enabled) {
+function registerHotkeys(map, enabled, replayGrab) {
   globalShortcut.unregisterAll();
   const registered = [], failed = [];
+  const sendReplaySave = () => { if (win && !win.isDestroyed()) win.webContents.send('replay-save'); };
   if (enabled) {
     for (const acc of Object.keys(map || {})) {
       try {
@@ -776,10 +777,15 @@ function registerHotkeys(map, enabled) {
     } catch {}
     // instant replay : fige les dernières secondes (marche même hors focus)
     try {
-      globalShortcut.register(REPLAY_ACCELERATOR, () => {
-        if (win && !win.isDestroyed()) win.webContents.send('replay-save');
-      });
+      globalShortcut.register(REPLAY_ACCELERATOR, sendReplaySave);
     } catch {}
+    // raccourci « figer les X dernières secondes » configurable (défaut « ² »)
+    if (replayGrab && replayGrab !== REPLAY_ACCELERATOR) {
+      try {
+        if (globalShortcut.register(replayGrab, sendReplaySave)) registered.push(replayGrab);
+        else failed.push(replayGrab);
+      } catch { failed.push(replayGrab); }
+    }
     // overlay in-game : affiche/cache la mini-fenêtre de favoris
     try {
       globalShortcut.register(OVERLAY_ACCELERATOR, () => toggleOverlay());
@@ -1512,7 +1518,7 @@ ipcMain.handle('choose-sounds-dir', async () => {
 
 ipcMain.handle('open-sounds-folder', () => shell.openPath(soundsDir()));
 
-ipcMain.handle('set-global-hotkeys', (_e, map, enabled) => registerHotkeys(map, enabled));
+ipcMain.handle('set-global-hotkeys', (_e, map, enabled, replayGrab) => registerHotkeys(map, enabled, replayGrab));
 
 ipcMain.handle('set-open-at-login', (_e, v) => {
   app.setLoginItemSettings({ openAtLogin: !!v });

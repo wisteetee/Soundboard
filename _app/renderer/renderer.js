@@ -22,6 +22,7 @@ const DEFAULTS = {
   replay: { source: 'mic', seconds: 5, auto: false, autoClip: false,
             yamCats: ['laugh', 'applause', 'shout'], yamAutoClip: false,
             mode: 'audio',   // onglet interne : audio | video
+            grabHotkey: '`', // raccourci global « figer les X dernières secondes » — touche physique en haut à gauche (« ² » sur AZERTY)
             // replay vidéo (ShadowPlay)
             video: { audio: 'system', seconds: 30, quality: '1080', auto: false } },
   theme: 'discord', // thème de couleur (voir THEMES)
@@ -441,7 +442,14 @@ function renderVoice() {
   for (const p of window.VOICE_PRESETS) {
     const el = document.createElement('div');
     el.className = 'vtile' + (p.id === state.voice.preset ? ' sel' : '');
-    el.innerHTML = '<span class="vemoji">' + p.emoji + '</span><div class="vname">' + esc(p.name) + '</div>';
+    el.style.setProperty('--vc', p.color || 'var(--blurple)');
+    el.innerHTML =
+      '<span class="vicon">' +
+        (p.svg ? '<svg viewBox="0 0 48 48" aria-hidden="true">' + p.svg + '</svg>'
+               : '<span class="vemoji">' + p.emoji + '</span>') +
+      '</span>' +
+      '<div class="vname">' + esc(p.name) + '</div>' +
+      (p.desc ? '<div class="vdesc">' + esc(p.desc) + '</div>' : '');
     el.addEventListener('click', () => setVoicePreset(p.id));
     grid.appendChild(el);
   }
@@ -1589,6 +1597,7 @@ $('editModal').addEventListener('mousedown', (e) => { if (e.target.id === 'editM
 
 /* ================== Capture d'un accélérateur ================== */
 let capturing = null;
+let capturingReplayGrab = false;   // capture en cours du raccourci « figer les X dernières secondes »
 function captureKey(s) {
   capturing = s;
   $('keyCaptureName').textContent = '« ' + s.name + ' »';
@@ -1615,6 +1624,26 @@ function toAccelerator(e) {
   return [...mods, key].join('+');
 }
 
+// Touche physique -> accélérateur Electron valide. Certains caractères (ex. « ² »
+// AZERTY, touche physique « Backquote ») ne sont pas des accélérateurs Electron
+// acceptés → on retombe sur la touche physique, qui vise le même emplacement clavier.
+const CODE_TO_ACCEL = {
+  Backquote: '`', Minus: '-', Equal: '=', BracketLeft: '[', BracketRight: ']',
+  Backslash: '\\', Semicolon: ';', Quote: "'", Comma: ',', Period: '.', Slash: '/',
+};
+function toGlobalAccelerator(e) {
+  const acc = toAccelerator(e);
+  if (!acc) return null;
+  const parts = acc.split('+');
+  const key = parts[parts.length - 1];
+  // caractère non-ASCII non enregistrable -> équivalent touche physique
+  if (key.length === 1 && key.charCodeAt(0) > 127 && CODE_TO_ACCEL[e.code]) {
+    parts[parts.length - 1] = CODE_TO_ACCEL[e.code];
+    return parts.join('+');
+  }
+  return acc;
+}
+
 document.addEventListener('keydown', (e) => {
   // Une fenêtre de saisie est ouverte : elle gère ses propres touches
   if ($('promptModal').classList.contains('show')) return;
@@ -1630,6 +1659,20 @@ document.addEventListener('keydown', (e) => {
     if (e.key === 'Escape') closeIconEditor();
     return;
   }
+  // Capture du raccourci « figer les X dernières secondes » (onglet Replay)
+  if (capturingReplayGrab) {
+    if (e.key === 'Escape') { capturingReplayGrab = false; refreshReplayGrabKeyUI(); return; }
+    const acc = toGlobalAccelerator(e);
+    if (!acc) return;   // attend une vraie touche (pas juste un modificateur)
+    e.preventDefault();
+    capturingReplayGrab = false;
+    state.replay.grabHotkey = acc;
+    saveState();
+    applyGlobalHotkeys();
+    toast('⌨️ Figer les dernières secondes → ' + grabKeyLabel(acc));
+    return;
+  }
+
   if (capturing) {
     const s = capturing;
     if (e.key === 'Escape') { capturing = null; $('keyCapture').classList.remove('show'); return; }
@@ -1675,11 +1718,12 @@ document.addEventListener('keydown', (e) => {
 
 /* ================== Raccourcis globaux (via Electron) ================== */
 async function applyGlobalHotkeys() {
-  const r = await window.sb.setGlobalHotkeys(state.hotkeys, state.globalHotkeys);
+  const r = await window.sb.setGlobalHotkeys(state.hotkeys, state.globalHotkeys, state.replay.grabHotkey || '');
   const warn = $('globalWarn');
   if (state.globalHotkeys && r && r.failed && r.failed.length) {
     warn.textContent = '⚠️ Impossible d\'enregistrer : ' + r.failed.join(', ') + ' (déjà utilisé par une autre appli). Choisis une autre combinaison.';
   } else warn.textContent = '';
+  if (typeof refreshReplayGrabKeyUI === 'function') refreshReplayGrabKeyUI();
 }
 
 /* ================== Chargement ================== */
@@ -3037,17 +3081,169 @@ $('replaySource2').addEventListener('change', (e) => { state.replay.source = e.t
 $('btnReplay').addEventListener('click', saveReplay);
 
 /* ================== Replay VIDÉO (ShadowPlay) ================== */
-// Buffer continu vidéo+audio : MediaRecorder en mode timeslice découpe
-// l'encodage en petits morceaux WebM ; on garde en mémoire une file glissante
-// des N dernières secondes. À la capture, on concatène -> un .webm.
+// IMPORTANT : Chromium encode TOUT l'enregistrement dans un seul cluster WebM et les
+// morceaux « timeslice » ne tombent pas sur des frontières de cluster. On ne peut donc
+// PAS couper « les N dernières secondes » en tronquant/concaténant des morceaux : le
+// .webm obtenu n'a pas d'en-tête exploitable et devient illisible (plusieurs Mo pour rien).
+// → Solution robuste : DEUX MediaRecorders qui se relaient. Chacun s'auto-relance toutes
+// les 2N s, ils sont décalés de N s. À tout instant, au moins un enregistreur possède un
+// segment continu couvrant les N dernières secondes ; ses morceaux forment un .webm
+// COMPLET et autonome, qu'on sauvegarde tel quel (validé en Chromium).
 let vidStream = null;        // flux écran (vidéo) + audio mixé
-let vidRecorder = null;      // MediaRecorder
-let vidChunks = [];          // [{ blob, t }] file glissante des morceaux
+let vidSlots = [];           // [{ rec, chunks:[], startedAt, timer }] enregistreurs qui se relaient
 let vidActive = false;
 let vidAudioCtx = null;      // pour mixer PC + micro si besoin
-const VID_TIMESLICE = 1000;  // 1 morceau / seconde (granularité de coupe)
+const VID_TIMESLICE = 1000;  // flush toutes les 1 s (pour ne pas perdre la dernière seconde au moment du grab)
+
+// Traces de diagnostic du replay vidéo (console DevTools uniquement)
+function vdbg(msg) { try { console.debug('[replay]', msg); } catch {} }
 
 function vidSelectedSeconds() { return fin(state.replay.video.seconds, 30); }
+
+/* ----- Mini-lecteur EBML : découpe un .webm aux frontières de clusters -----
+   Un enregistreur couvre entre N et 2N secondes au moment du grab. Pour rendre
+   ~ exactement les N dernières secondes, on repère les clusters WebM (chacun commence
+   par une image-clé chez Chromium) et on ne garde que l'en-tête + les clusters récents. */
+function ebmlReadVint(u8, pos, keepMarker) {
+  const first = u8[pos];
+  if (first === undefined || first === 0) return null;   // 0 => vint > 8 octets : invalide ici
+  let len = 1, mask = 0x80;
+  while (!(first & mask)) { mask >>= 1; len++; }
+  if (pos + len > u8.length) return null;
+  let val = keepMarker ? first : (first & (mask - 1));
+  let unknown = !keepMarker && (first & (mask - 1)) === mask - 1;
+  for (let i = 1; i < len; i++) {
+    const b = u8[pos + i];
+    val = val * 256 + b;
+    if (b !== 0xFF) unknown = false;
+  }
+  return { val, len, unknown };
+}
+// Liste les clusters { start, tc } (tc = Timecode ms depuis le début de l'enregistreur).
+// Gère les tailles « inconnues » (flux MediaRecorder) en descendant dans les éléments.
+function webmClusters(u8) {
+  const clusters = [];
+  let pos = 0, guard = 0;
+  while (pos < u8.length && guard++ < 1e6) {
+    const id = ebmlReadVint(u8, pos, true);
+    if (!id) break;
+    const size = ebmlReadVint(u8, pos + id.len, false);
+    if (!size) break;
+    const dataStart = pos + id.len + size.len;
+    if (id.val === 0x1F43B675) {           // Cluster
+      let tc = null, tcPos = 0, tcLen = 0;
+      const cid = ebmlReadVint(u8, dataStart, true);
+      if (cid && cid.val === 0xE7) {       // Timecode (1er enfant en principe)
+        const csz = ebmlReadVint(u8, dataStart + cid.len, false);
+        if (csz && !csz.unknown && csz.val <= 8) {
+          tcPos = dataStart + cid.len + csz.len; tcLen = csz.val;
+          tc = 0;
+          for (let i = 0; i < csz.val; i++) tc = tc * 256 + u8[tcPos + i];
+        }
+      }
+      clusters.push({ start: pos, tc, tcPos, tcLen });
+      pos = size.unknown ? dataStart : dataStart + size.val;  // taille inconnue : on marche les enfants
+      continue;
+    }
+    if (id.val === 0x18538067 || size.unknown) { pos = dataStart; continue; }  // Segment : descendre
+    pos = dataStart + size.val;            // autres éléments : sauter
+  }
+  return clusters;
+}
+// Numéro de piste vidéo (TrackEntry avec TrackType=1) — nécessaire pour tester les images-clés.
+function webmVideoTrack(u8) {
+  let pos = 0, guard = 0;
+  while (pos < u8.length && guard++ < 1e5) {
+    const id = ebmlReadVint(u8, pos, true); if (!id) break;
+    const size = ebmlReadVint(u8, pos + id.len, false); if (!size) break;
+    const dataStart = pos + id.len + size.len;
+    if (id.val === 0x18538067) { pos = dataStart; continue; }        // Segment : descendre
+    if (id.val === 0x1654AE6B && !size.unknown) {                    // Tracks
+      let p = dataStart; const end = dataStart + size.val;
+      while (p < end) {
+        const eid = ebmlReadVint(u8, p, true); if (!eid) break;
+        const esz = ebmlReadVint(u8, p + eid.len, false); if (!esz || esz.unknown) break;
+        const eds = p + eid.len + esz.len;
+        if (eid.val === 0xAE) {                                      // TrackEntry
+          let q = eds, num = null, type = null; const eend = eds + esz.val;
+          while (q < eend) {
+            const fid = ebmlReadVint(u8, q, true); if (!fid) break;
+            const fsz = ebmlReadVint(u8, q + fid.len, false); if (!fsz || fsz.unknown) break;
+            const fds = q + fid.len + fsz.len;
+            if (fid.val === 0xD7) { num = 0; for (let i = 0; i < fsz.val; i++) num = num * 256 + u8[fds + i]; }
+            if (fid.val === 0x83) type = u8[fds];
+            q = fds + fsz.val;
+          }
+          if (type === 1 && num != null) return num;
+        }
+        p = eds + esz.val;
+      }
+      return null;
+    }
+    if (id.val === 0x1F43B675) return null;                          // clusters atteints sans Tracks
+    if (size.unknown) { pos = dataStart; continue; }
+    pos = dataStart + size.val;
+  }
+  return null;
+}
+// Le cluster commence-t-il par une image-clé vidéo ? (flag 0x80 du 1er SimpleBlock vidéo)
+// Chromium crée aussi des clusters SANS image-clé (ex. resynchro audio) : couper là
+// casse le décodage (MediaError code 3) — on ne coupe donc QUE sur une image-clé.
+function clusterStartsWithKeyframe(u8, clusterStart, videoTrack) {
+  const id = ebmlReadVint(u8, clusterStart, true); if (!id) return false;
+  const size = ebmlReadVint(u8, clusterStart + id.len, false); if (!size) return false;
+  let p = clusterStart + id.len + size.len, guard = 0;
+  const end = size.unknown ? u8.length : p + size.val;
+  while (p < end && guard++ < 5000) {
+    const eid = ebmlReadVint(u8, p, true); if (!eid) return false;
+    if (eid.val === 0x1F43B675) return false;                        // cluster suivant
+    const esz = ebmlReadVint(u8, p + eid.len, false); if (!esz || esz.unknown) return false;
+    const eds = p + eid.len + esz.len;
+    if (eid.val === 0xA3) {                                          // SimpleBlock
+      const tn = ebmlReadVint(u8, eds, false); if (!tn) return false;
+      if (tn.val === videoTrack) return !!(u8[eds + tn.len + 2] & 0x80);  // [vint piste][tc int16][flags]
+    } else if (eid.val === 0xA0 && videoTrack != null) {
+      return false;    // BlockGroup vidéo = frame avec références -> pas une image-clé sûre
+    }
+    p = eds + esz.val;
+  }
+  return false;
+}
+// Ne garde que ~ les N dernières secondes (coupe au cluster-image-clé près, sans ré-encodage).
+// totalMs = durée réellement couverte par CET enregistreur. Repli : blob d'origine.
+async function trimWebmToLastSeconds(blob, type, totalMs, wantedMs) {
+  try {
+    if (!(totalMs > wantedMs + 1500)) { vdbg(`trim: skip (total=${Math.round(totalMs)}ms ≈ voulu)`); return blob; }
+    const u8 = new Uint8Array(await blob.arrayBuffer());
+    const clusters = webmClusters(u8);
+    if (clusters.length < 2 || clusters[0].start === 0) { vdbg(`trim: skip (clusters=${clusters.length} start=${clusters[0] && clusters[0].start})`); return blob; }
+    const vt = webmVideoTrack(u8);
+    for (const c of clusters) c.key = vt != null && clusterStartsWithKeyframe(u8, c.start, vt);
+    const cut = totalMs - wantedMs;        // le clip doit commencer ici (ms flux)
+    let k = 0;
+    for (let i = 0; i < clusters.length; i++) {
+      if (clusters[i].tc != null && clusters[i].tc <= cut && clusters[i].key) k = i;
+      if (clusters[i].tc != null && clusters[i].tc > cut) break;
+    }
+    vdbg(`trim: total=${Math.round(totalMs)}ms voulu=${wantedMs}ms vidTrack=${vt} clusters=[${clusters.map(c => (c.key ? 'K' : 'x') + c.tc).join(',')}] garde depuis #${k}`);
+    if (k === 0) return blob;
+    // Recolle en-tête + clusters récents, puis REBASE les timecodes des clusters gardés :
+    // sans ça le clip « commence » à tc>0 et le lecteur affiche la durée totale de
+    // l'enregistreur (ex. 24 s pour 15 s de contenu) avec un début mort.
+    const head = clusters[0].start, cutStart = clusters[k].start, base = clusters[k].tc || 0;
+    const out = new Uint8Array(head + (u8.length - cutStart));
+    out.set(u8.subarray(0, head), 0);
+    out.set(u8.subarray(cutStart), head);
+    for (let i = k; i < clusters.length; i++) {
+      const c = clusters[i];
+      if (c.tc == null || !c.tcLen) continue;
+      let v = Math.max(0, c.tc - base);
+      const p = head + (c.tcPos - cutStart);            // même longueur d'octets, valeur plus petite
+      for (let j = c.tcLen - 1; j >= 0; j--) { out[p + j] = v & 0xFF; v = Math.floor(v / 256); }
+    }
+    return new Blob([out], { type });
+  } catch (e) { vdbg('trim: échec ' + (e.message || e)); return blob; }
+}
 
 // Construit la contrainte vidéo selon la qualité choisie
 function vidVideoConstraints() {
@@ -3115,17 +3311,40 @@ async function startVideoReplay() {
     // MediaRecorder : choisit le meilleur codec dispo
     const mime = ['video/webm;codecs=vp9,opus', 'video/webm;codecs=vp8,opus', 'video/webm']
       .find(m => MediaRecorder.isTypeSupported(m)) || 'video/webm';
-    vidRecorder = new MediaRecorder(vidStream, { mimeType: mime, videoBitsPerSecond: state.replay.video.quality === '720' ? 4_000_000 : 8_000_000 });
-    vidChunks = [];
-    vidRecorder.ondataavailable = (e) => {
-      if (!e.data || !e.data.size) return;
-      vidChunks.push({ blob: e.data, t: Date.now() });
-      // purge : ne garde que les morceaux plus récents que la durée voulue (+2 s de marge)
-      const cutoff = Date.now() - (vidSelectedSeconds() + 2) * 1000;
-      while (vidChunks.length > 2 && vidChunks[0].t < cutoff) vidChunks.shift();
-    };
-    vidRecorder.start(VID_TIMESLICE);
-    vidActive = true;
+    const bitrate = state.replay.video.quality === '720' ? 4_000_000 : 8_000_000;
+    const N = Math.max(2, vidSelectedSeconds());   // fenêtre voulue (s)
+    const periodMs = 2 * N * 1000;                 // chaque enregistreur se relance toutes les 2N s
+
+    vidActive = true;                              // avant de lancer (les cycles vérifient vidActive)
+
+    // Un « slot » = un MediaRecorder qui s'auto-relance. Le tableau `chunks` est LIÉ par
+    // closure à CE recorder : quand on relance, l'ancien pousse encore son dernier morceau
+    // (déclenché par stop()) dans SON tableau, pas dans le nouveau → segments non corrompus.
+    vdbg(`startVideoReplay mime=${mime} bitrate=${bitrate} N=${N} periodMs=${periodMs}`);
+    function makeSlot(name) {
+      const slot = { name, rec: null, chunks: [], startedAt: 0, timer: null, mime };
+      slot.cycle = () => {
+        if (!vidActive) return;
+        if (slot.rec && slot.rec.state !== 'inactive') { try { slot.rec.stop(); } catch {} }
+        let rec;
+        // videoKeyFrameIntervalDuration : force une image-clé (= un nouveau cluster WebM)
+        // toutes les ~2 s. Sans ça, écran statique => images-clés très espacées (8 s+)
+        // et la découpe « N dernières secondes » devient grossière. Ignoré si non supporté.
+        try { rec = new MediaRecorder(vidStream, { mimeType: mime, videoBitsPerSecond: bitrate, videoKeyFrameIntervalDuration: 2000 }); }
+        catch (err) { vdbg(`slot ${name} MediaRecorder FAIL ${err.message || err}`); return; }
+        const chunks = [];
+        slot.rec = rec; slot.chunks = chunks; slot.startedAt = Date.now();
+        rec.ondataavailable = (e) => { if (e.data && e.data.size) chunks.push(e.data); };
+        rec.onerror = (ev) => vdbg(`slot ${name} ERROR ${ev && ev.error && ev.error.name}`);
+        try { rec.start(VID_TIMESLICE); } catch (err) { vdbg(`slot ${name} start FAIL ${err.message || err}`); }
+        slot.timer = setTimeout(slot.cycle, periodMs);
+      };
+      return slot;
+    }
+    const slotA = makeSlot('A'), slotB = makeSlot('B');
+    vidSlots = [slotA, slotB];
+    slotA.cycle();                                          // démarre tout de suite
+    slotB.timer = setTimeout(() => slotB.cycle(), N * 1000); // décalé de N s (chevauchement)
     refreshVideoTab();
   } catch (e) {
     toast('Erreur capture vidéo : ' + (e.message || e));
@@ -3136,15 +3355,17 @@ async function startVideoReplay() {
 let vidStreamRaw = null, vidStreamExtra = null;
 
 function stopVideoReplay() {
-  if (vidRecorder && vidRecorder.state !== 'inactive') { try { vidRecorder.stop(); } catch {} }
-  vidRecorder = null;
+  vidActive = false;   // stoppe les relances programmées (les cycles vérifient ce drapeau)
+  for (const s of vidSlots) {
+    if (s.timer) clearTimeout(s.timer);
+    if (s.rec && s.rec.state !== 'inactive') { try { s.rec.stop(); } catch {} }
+  }
+  vidSlots = [];
   for (const s of [vidStreamRaw, vidStream, ...(vidStreamExtra || [])]) {
     if (s && s.getTracks) s.getTracks().forEach(t => t.stop());
   }
   vidStreamRaw = vidStream = vidStreamExtra = null;
   if (vidAudioCtx) { vidAudioCtx.close().catch(() => {}); vidAudioCtx = null; }
-  vidChunks = [];
-  vidActive = false;
   const pv = $('vidPreview'); if (pv) { pv.srcObject = null; }
   const wrap = $('vidPreviewWrap'); if (wrap) wrap.classList.remove('on');
   refreshVideoTab();
@@ -3152,21 +3373,37 @@ function stopVideoReplay() {
 
 // Fige les dernières secondes en un fichier .webm
 async function saveVideoClip() {
-  if (!vidActive || !vidRecorder) { toast('⚠️ Active d\'abord la capture vidéo'); return; }
-  if (!vidChunks.length) { toast('⏳ Le buffer se remplit, réessaie dans 1 s'); return; }
-  toast('🎬 Enregistrement du clip…');
-  // force l'écriture du morceau en cours pour ne pas perdre la dernière seconde
-  try { vidRecorder.requestData(); } catch {}
-  await new Promise(r => setTimeout(r, 250));
-  const wanted = vidSelectedSeconds() * 1000;
+  if (!vidActive || !vidSlots.length) { toast('⚠️ Active d\'abord la capture vidéo'); return; }
+  const N = Math.max(2, vidSelectedSeconds());
   const now = Date.now();
-  const keep = vidChunks.filter(c => c.t >= now - wanted);
-  const blobs = (keep.length ? keep : vidChunks).map(c => c.blob);
-  const blob = new Blob(blobs, { type: vidRecorder.mimeType || 'video/webm' });
+  // Choisit l'enregistreur le plus « mûr » : idéalement âge ≥ N (couvre les N dernières s),
+  // sinon celui qui a le plus de contenu (au tout début de la capture).
+  const ready = vidSlots.filter(s => s.rec && s.chunks.length)
+    .map(s => ({ s, age: (now - s.startedAt) / 1000 }))
+    .sort((a, b) => b.age - a.age);
+  const sumBytes = (arr) => arr.reduce((n, b) => n + (b.size || 0), 0);
+  vdbg('grab: ' + vidSlots.map(s => `${s.name}[rec=${!!s.rec} n=${s.chunks.length} bytes=${sumBytes(s.chunks)} age=${((now - s.startedAt) / 1000).toFixed(1)}]`).join(' '));
+  if (!ready.length) { vdbg('grab: ready VIDE'); toast('⏳ Le buffer se remplit, réessaie dans 1 s'); return; }
+  const pick = (ready.find(x => x.age >= N - 0.5) || ready[0]).s;
+  // Capture les références AVANT l'await : le slot peut se relancer pendant l'attente
+  // (sinon on sauvegarderait le nouveau tableau, vide → 0 octet).
+  const chunks = pick.chunks, rec = pick.rec, type = rec.mimeType || 'video/webm';
+  const startedAt = pick.startedAt;
+  vdbg(`grab: pick=${pick.name} n=${chunks.length} bytes=${sumBytes(chunks)}`);
+  toast('🎬 Enregistrement du clip…');
+  try { rec.requestData(); } catch {}   // force l'écriture de la dernière seconde
+  await new Promise(r => setTimeout(r, 250));
+  // Les morceaux d'UN seul enregistreur = un .webm complet et autonome (en-tête inclus).
+  let blob = new Blob(chunks, { type });
+  // L'enregistreur couvre entre N et 2N s : rabote aux ~N dernières secondes (au cluster près).
+  blob = await trimWebmToLastSeconds(blob, type, Date.now() - startedAt, N * 1000);
+  vdbg(`grab: après await+trim, pick=${pick.name} n=${chunks.length} blob=${blob.size}`);
   const buf = new Uint8Array(await blob.arrayBuffer());
   const r = await window.sb.saveVideoClip(buf, null);
   if (r.ok) {
-    toast('🎬 Clip vidéo enregistré (' + Math.round(blob.size / 1e6 * 10) / 10 + ' Mo)');
+    const covered = Math.round((Date.now() - startedAt) / 1000);   // secondes réellement couvertes
+    const short = covered < N - 2 ? ' — ' + covered + ' s couvertes, le tampon se remplit encore' : '';
+    toast('🎬 Clip vidéo enregistré (' + Math.round(blob.size / 1e6 * 10) / 10 + ' Mo)' + short);
     await loadVideoClips();
   } else toast('❌ ' + (r.error || 'Échec'));
 }
@@ -3183,6 +3420,59 @@ function refreshVideoTab() {
       ? 'Capturer les ' + vidSelectedSeconds() + ' dernières secondes'
       : 'Active la capture d\'abord';
   }
+}
+
+/* ----- Miniatures des clips vidéo (générées à la volée, cache mémoire) ----- */
+const vidThumbs = new Map();       // "fichier|mtime" -> { url, dur }
+let vidThumbChain = Promise.resolve();   // génération séquentielle (1 vidéo à la fois)
+
+function fmtClipDur(s) {
+  s = Math.round(s);
+  return s >= 60 ? Math.floor(s / 60) + ' min' + (s % 60 ? ' ' + (s % 60) + ' s' : '') : s + ' s';
+}
+// Charge la vidéo hors écran, force le calcul de la durée (webm sans en-tête de durée),
+// se cale sur une frame représentative et la dessine en petit -> dataURL jpeg.
+function makeVideoThumb(file) {
+  return new Promise((resolve) => {
+    const v = document.createElement('video');
+    v.muted = true; v.preload = 'auto';
+    let phase = 0, dur = 0, done = false;
+    const finish = (t) => { if (done) return; done = true; clearTimeout(guard); v.removeAttribute('src'); try { v.load(); } catch {} resolve(t); };
+    const guard = setTimeout(() => finish(null), 8000);
+    v.addEventListener('loadeddata', () => { try { v.currentTime = 1e9; } catch { finish(null); } });
+    v.addEventListener('seeked', () => {
+      if (phase === 0) {           // durée maintenant connue, retourne vers une frame du début
+        phase = 1;
+        const start = v.seekable.length ? v.seekable.start(0) : 0;
+        dur = isFinite(v.duration) ? Math.max(0, v.duration - start) : 0;
+        try { v.currentTime = start + Math.min(1.5, Math.max(0.1, dur * 0.2)); } catch { finish(null); }
+      } else if (phase === 1) {    // frame prête : capture
+        phase = 2;
+        try {
+          const w = 128, h = Math.max(24, Math.round(w * (v.videoHeight || 9) / (v.videoWidth || 16)));
+          const c = document.createElement('canvas'); c.width = w; c.height = h;
+          c.getContext('2d').drawImage(v, 0, 0, w, h);
+          finish({ url: c.toDataURL('image/jpeg', 0.72), dur });
+        } catch { finish(null); }
+      }
+    });
+    v.addEventListener('error', () => finish(null));
+    v.src = window.sb.videoUrl(file);
+  });
+}
+function requestVideoThumb(clip, el) {
+  const key = clip.file + '|' + clip.mtime;
+  const apply = (t) => {
+    if (!t || !el.isConnected) return;
+    const th = el.querySelector('.vc-thumb');
+    if (th && t.url) { th.style.backgroundImage = 'url(' + t.url + ')'; th.classList.add('img'); th.textContent = ''; }
+    const meta = el.querySelector('.vc-meta');
+    if (meta && t.dur && !meta.dataset.dur) { meta.dataset.dur = '1'; meta.textContent = '🎬 ' + fmtClipDur(t.dur) + ' · ' + meta.textContent; }
+  };
+  if (vidThumbs.has(key)) { apply(vidThumbs.get(key)); return; }
+  vidThumbChain = vidThumbChain.then(() => makeVideoThumb(clip.file).then((t) => {
+    if (t) { vidThumbs.set(key, t); apply(t); }
+  }).catch(() => {}));
 }
 
 async function loadVideoClips() {
@@ -3214,6 +3504,7 @@ async function loadVideoClips() {
       openVideoPlayer(c.file);
     });
     box.appendChild(el);
+    requestVideoThumb(c, el);   // miniature + durée, générées en arrière-plan
   }
 }
 
@@ -3236,11 +3527,14 @@ function openVideoPlayer(file) {
   v.play().catch(() => {});
 }
 function fixWebmDuration(v) {
+  // Début réel du média : après purge du buffer, le 1er cluster peut démarrer à un
+  // timecode non nul → on se cale sur le début de la plage lisible, pas sur 0.
+  const startAt = () => { try { return v.seekable.length ? v.seekable.start(0) : 0; } catch { return 0; } };
   const onMeta = () => {
     if (v.duration === Infinity || isNaN(v.duration)) {
       const restore = () => {
         v.removeEventListener('timeupdate', restore);
-        v.currentTime = 0;   // revient au début une fois la durée connue
+        v.currentTime = startAt();   // revient au début lisible une fois la durée connue
       };
       v.addEventListener('timeupdate', restore);
       v.currentTime = 1e9;   // provoque le recalcul de la durée
@@ -3263,6 +3557,31 @@ function setReplayMode(mode) {
   if (mode === 'video') loadVideoClips();
 }
 
+// ----- Raccourci configurable « figer les X dernières secondes » (audio + vidéo) -----
+function grabKeyLabel(acc) {
+  if (!acc) return '—';
+  if (acc === '`') return '²';   // touche physique en haut à gauche (AZERTY)
+  return acc;
+}
+function refreshReplayGrabKeyUI() {
+  const btn = $('replayGrabKeyBtn'); if (!btn) return;
+  if (capturingReplayGrab) { btn.textContent = '⏳ Appuie…'; btn.classList.add('capturing'); }
+  else { btn.textContent = grabKeyLabel(state.replay.grabHotkey); btn.classList.remove('capturing'); }
+}
+(() => {
+  const btn = $('replayGrabKeyBtn'), reset = $('replayGrabKeyReset');
+  if (btn) btn.addEventListener('click', () => {
+    capturingReplayGrab = !capturingReplayGrab;   // re-clic = annule
+    refreshReplayGrabKeyUI();
+  });
+  if (reset) reset.addEventListener('click', () => {
+    capturingReplayGrab = false;
+    state.replay.grabHotkey = '`'; saveState(); applyGlobalHotkeys();
+    toast('⌨️ Raccourci remis par défaut → touche « ² »');
+  });
+  refreshReplayGrabKeyUI();
+})();
+
 // ----- Bindings vidéo -----
 document.querySelectorAll('.rmode').forEach(b => b.addEventListener('click', () => setReplayMode(b.dataset.rmode)));
 $('swVideo').addEventListener('change', (e) => e.target.checked ? startVideoReplay() : stopVideoReplay());
@@ -3284,6 +3603,10 @@ $('vidPlayer').addEventListener('click', (e) => { if (e.target === $('vidPlayer'
     lbl.textContent = v >= 60 ? (v % 60 === 0 ? (v / 60) + ' min' : Math.floor(v / 60) + ' min ' + (v % 60) + ' s') : v + ' s';
     state.replay.video.seconds = v; saveState(); refreshVideoTab();
   });
+  // La rotation des enregistreurs est calée sur la durée choisie : au relâchement du
+  // curseur, on relance la capture, sinon le tampon reste limité à l'ancienne durée
+  // (ex. réglé 15 s -> 60 s : les clips plafonnaient à ~30 s).
+  dur.addEventListener('change', () => { if (vidActive) { startVideoReplay(); toast('⏱ Durée changée : le tampon repart (' + vidSelectedSeconds() + ' s)'); } });
   const auto = $('vidAuto'); auto.checked = !!state.replay.video.auto;
   auto.addEventListener('change', () => { state.replay.video.auto = auto.checked; saveState(); });
 })();
