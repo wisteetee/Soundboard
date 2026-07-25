@@ -27,8 +27,10 @@ _app/ia/_*.txt
 # Modèles de voix IA (volumineux : .pth + .index) — restent en local
 Voix IA/
 
-# Ancien exécutable buildé (régénérable)
+# Exécutables buildés (régénérables via « npm run dist ») — jamais versionnés
 Soundboard Discord.exe
+Soundboard-Discord-Portable-*.exe
+*.exe
 
 # Bibliothèque de sons personnelle (perso, non partagée) — le dépôt ne suit que le CODE.
 # On ignore les fichiers audio À LA RACINE et dans les catégories (sous-dossiers de

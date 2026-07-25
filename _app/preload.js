@@ -45,6 +45,9 @@ contextBridge.exposeInMainWorld('sb', {
   chooseSoundsDir: () => ipcRenderer.invoke('choose-sounds-dir'),
   openSoundsFolder: () => ipcRenderer.invoke('open-sounds-folder'),
   setGlobalHotkeys: (map, enabled, replayGrab, looper) => ipcRenderer.invoke('set-global-hotkeys', map, enabled, replayGrab, looper),
+  // Suspend/reprend les raccourcis globaux (pendant la saisie dans un champ)
+  suspendHotkeys: () => ipcRenderer.send('suspend-hotkeys'),
+  resumeHotkeys: () => ipcRenderer.send('resume-hotkeys'),
   setOpenAtLogin: (v) => ipcRenderer.invoke('set-open-at-login', v),
   setMinimizeToTray: (v) => ipcRenderer.invoke('set-minimize-to-tray', v),
   // URL de lecture pour un fichier son (protocole custom snd://)

@@ -4,7 +4,8 @@
 const DEFAULTS = {
   discord: { enabled: true, deviceId: '', volume: 1 },
   monitor: { enabled: true, deviceId: 'default', volume: 0.5 },
-  mic: { enabled: false, deviceId: 'default', gain: 1, denoise: false, denoiseStrength: 1, denoiseGate: 0.7 },
+  mic: { enabled: false, deviceId: 'default', gain: 1, denoise: false, denoiseStrength: 1, denoiseGate: 0.7,
+         ducking: false, duckAmount: 0.6 },  // duckAmount = combien on baisse la voix (0.6 = -60%)
   cut: false,
   globalHotkeys: true,
   hotkeys: {},   // { "accélérateur": "fichier" }  ex: "Ctrl+Alt+1"
@@ -39,6 +40,7 @@ const DEFAULTS = {
             // replay vidéo (ShadowPlay)
             video: { audio: 'system', seconds: 30, quality: '1080', auto: false } },
   theme: 'discord', // thème de couleur (voir THEMES)
+  bg: 'none',       // fond d'écran décoratif (voir BACKGROUNDS)
   normalizeImport: false, // normaliser le volume des sons à l'import (loudnorm)
   tts: { voice: 'fr-FR-DeniseNeural', rate: 1, pitch: 0, history: [] }, // onglet Dire
 };
@@ -233,6 +235,19 @@ function fillSelect(sel, list, chosen) {
 navigator.mediaDevices.addEventListener('devicechange', () => refreshDevices().then(render));
 
 /* ================== Lecture ================== */
+// Ducking auto : baisse ta VOIX micro pendant qu'un son joue (pour ne pas la couvrir),
+// puis la remonte. Rampe douce. Ne touche au micro que si le passthrough est actif.
+function applyDucking() {
+  if (!micNodes || !micNodes.gain) return;
+  const base = fin(state.mic.gain, 1);
+  const ducking = state.mic.ducking && active.size > 0;
+  const target = ducking ? base * (1 - fin(state.mic.duckAmount, 0.6)) : base;
+  try {
+    const now = micNodes.ctx.currentTime;
+    micNodes.gain.gain.setTargetAtTime(target, now, ducking ? 0.05 : 0.18); // baisse vite, remonte doux
+  } catch { micNodes.gain.gain.value = target; }
+}
+
 async function spawnAudio(url, sinkId, vol, file) {
   const a = new Audio();
   a.preload = 'auto';
@@ -243,6 +258,7 @@ async function spawnAudio(url, sinkId, vol, file) {
   try { if (sinkId && sinkId !== 'default') await a.setSinkId(sinkId); } catch (e) {}
   a.src = url;
   active.set(a, file);
+  applyDucking();   // un son démarre -> baisse la voix si le ducking est actif
   // barre de progression sur la tuile. On met la référence en cache (résolue à la
   // 1re frame) au lieu de faire un querySelector ~4x/s, et on RETIRE le listener à
   // la fin (sinon il fuite : l'élément Audio est jeté mais le listener y restait).
@@ -253,7 +269,7 @@ async function spawnAudio(url, sinkId, vol, file) {
     if (!bar || !bar.isConnected) bar = document.querySelector('.tile[data-file="' + CSS.escape(file) + '"] .bar');
     if (bar) bar.style.width = ((a.currentTime / a.duration) * 100).toFixed(1) + '%';
   };
-  const done = () => { active.delete(a); a.removeEventListener('timeupdate', onTime); updatePlaying(); };
+  const done = () => { active.delete(a); a.removeEventListener('timeupdate', onTime); applyDucking(); updatePlaying(); };
   a.onended = done;
   a.onerror = done;
   a.addEventListener('timeupdate', onTime);
@@ -1449,9 +1465,13 @@ async function normalizeSounds(files, opts = {}) {
     const r = await window.sb.editor.ensure();
     if (!r.ok) { toast('❌ ffmpeg indisponible : ' + (r.error || 'erreur')); return; }
   }
+  const total = files.length;
   if (!opts.silent) toast('📊 Normalisation du volume…', 8000);
-  let ok = 0, fail = 0;
+  let ok = 0, fail = 0, i = 0;
   for (const f of files) {
+    i++;
+    // progression visible pour les gros lots (ex. « tout normaliser »)
+    if (opts.progress && total > 1) toast(`📊 Normalisation… ${i}/${total}`, 4000);
     const r = await window.sb.editor.normalize(f);
     if (r.ok) { ok++; durations.delete(f); } else fail++;
   }
@@ -1923,7 +1943,7 @@ document.addEventListener('keydown', (e) => {
   }
   // Capture du raccourci « figer les X dernières secondes » (onglet Replay)
   if (capturingReplayGrab) {
-    if (e.key === 'Escape') { capturingReplayGrab = false; refreshReplayGrabKeyUI(); return; }
+    if (e.key === 'Escape') { capturingReplayGrab = false; refreshReplayGrabKeyUI(); if ($('guideView') && $('guideView').style.display !== 'none') renderGuideKeys(); return; }
     const acc = toGlobalAccelerator(e);
     if (!acc) return;   // attend une vraie touche (pas juste un modificateur)
     e.preventDefault();
@@ -1931,6 +1951,8 @@ document.addEventListener('keydown', (e) => {
     state.replay.grabHotkey = acc;
     saveState();
     applyGlobalHotkeys();
+    if (typeof refreshReplayGrabKeyUI === 'function') refreshReplayGrabKeyUI();
+    if ($('guideView') && $('guideView').style.display !== 'none') renderGuideKeys();
     toast('⌨️ Figer les dernières secondes → ' + grabKeyLabel(acc));
     return;
   }
@@ -1938,7 +1960,7 @@ document.addEventListener('keydown', (e) => {
   // Capture d'une touche du live looper (capture / boucle / retrigger)
   if (capturingLooperKey) {
     const field = capturingLooperKey;
-    if (e.key === 'Escape') { capturingLooperKey = null; refreshLooperKeys(); return; }
+    if (e.key === 'Escape') { capturingLooperKey = null; refreshLooperKeys(); if ($('guideView') && $('guideView').style.display !== 'none') renderGuideKeys(); return; }
     const acc = toGlobalAccelerator(e);
     if (!acc) return;
     e.preventDefault();
@@ -1950,6 +1972,7 @@ document.addEventListener('keydown', (e) => {
     saveState();
     applyGlobalHotkeys();
     refreshLooperKeys();
+    if ($('guideView') && $('guideView').style.display !== 'none') renderGuideKeys();
     return;
   }
 
@@ -1960,6 +1983,7 @@ document.addEventListener('keydown', (e) => {
       capturing = null; $('keyCapture').classList.remove('show');
       for (const [k, f] of Object.entries(state.hotkeys)) if (f === s.file) delete state.hotkeys[k];
       saveState(); applyGlobalHotkeys(); render();
+      if ($('guideView') && $('guideView').style.display !== 'none') renderGuideKeys();
       return;
     }
     const acc = toAccelerator(e);
@@ -1973,6 +1997,7 @@ document.addEventListener('keydown', (e) => {
     saveState();
     applyGlobalHotkeys();
     render();
+    if ($('guideView') && $('guideView').style.display !== 'none') renderGuideKeys();
     toast('⌨️ « ' + s.name + ' » → ' + acc);
     return;
   }
@@ -2014,10 +2039,15 @@ async function applyGlobalHotkeys() {
 /* ================== Chargement ================== */
 async function loadSounds() {
   const [snds, flds] = await Promise.all([window.sb.listSounds(), window.sb.listFolders()]);
+  const prevKey = sounds.map(s => s.file).join('\n');
   sounds = Array.isArray(snds) ? snds : [];
   folders = Array.isArray(flds) ? flds : [];
-  playsOrder = null;   // bibliothèque rechargée → on autorise un re-classement « plus joués »
-  topPlayedSnapshot = null;
+  // On ne ré-ordonne « plus joués » QUE si la liste de fichiers a réellement changé
+  // (ajout/suppression/renommage). Un rechargement à contenu identique — déclenché
+  // par une sauvegarde d'état, un watcher, etc. — garde l'ordre figé pour ne pas
+  // faire sauter le son qu'on vient de jouer.
+  const newKey = sounds.map(s => s.file).join('\n');
+  if (newKey !== prevKey) { playsOrder = null; topPlayedSnapshot = null; }
   $('statApp').textContent = 'Application prête · ' + sounds.length + ' son' + (sounds.length > 1 ? 's' : '');
   render();
   if ($('replayView') && $('replayView').style.display === 'block') renderClips();
@@ -2097,6 +2127,18 @@ bindSwitch('swDiscord', () => state.discord.enabled, v => state.discord.enabled 
 bindSwitch('swMonitor', () => state.monitor.enabled, v => state.monitor.enabled = v);
 bindSwitch('swCut', () => state.cut, v => state.cut = v);
 bindSwitch('swNorm', () => state.normalizeImport, v => state.normalizeImport = v);
+// Normaliser TOUTE la bibliothèque d'un coup (bouton Réglages)
+$('btnNormalizeAll').addEventListener('click', async () => {
+  const files = sounds.map(s => s.file);
+  if (!files.length) { toast('Aucun son à normaliser.'); return; }
+  if (!confirm(`Normaliser le volume de tous les sons (${files.length}) ?\n\n` +
+    'Les fichiers seront modifiés définitivement. Ça peut prendre un moment.')) return;
+  const btn = $('btnNormalizeAll');
+  btn.disabled = true; const label = btn.textContent;
+  btn.textContent = '⏳ Normalisation en cours…';
+  try { await normalizeSounds(files, { progress: true }); }
+  finally { btn.disabled = false; btn.textContent = label; }
+});
 bindSwitch('swMic', () => state.mic.enabled, v => {
   if (iaLive) {
     // le live IA tient le micro : réactiver le passthrough enverrait ta voix brute
@@ -2152,7 +2194,7 @@ $('testVoiceMon') && $('testVoiceMon').addEventListener('click', testMonitorBip)
 bindSelect('selMic', () => state.mic.deviceId, v => { state.mic.deviceId = v; if (state.mic.enabled) setMicPassthrough(true); });
 bindVol('volDiscord', 'volDiscordLbl', () => state.discord.volume, v => state.discord.volume = v);
 bindVol('volMonitor', 'volMonitorLbl', () => state.monitor.volume, v => state.monitor.volume = v);
-bindVol('volMic', 'volMicLbl', () => state.mic.gain, v => { state.mic.gain = v; if (micNodes) micNodes.gain.gain.value = v; });
+bindVol('volMic', 'volMicLbl', () => state.mic.gain, v => { state.mic.gain = v; if (micNodes) applyDucking(); });
 
 // Filtre anti-bruit micro (façon Krisp)
 bindSwitch('swDenoise', () => state.mic.denoise, v => {
@@ -2163,6 +2205,16 @@ bindSwitch('swDenoise', () => state.mic.denoise, v => {
 $('denoiseOpts').style.display = state.mic.denoise ? 'block' : 'none';
 bindVol('denoiseGate', 'denoiseGateLbl', () => fin(state.mic.denoiseGate, 0.7),
   v => { state.mic.denoiseGate = v; applyDenoise(); });
+
+// Ducking auto : baisse la voix pendant qu'un son joue
+bindSwitch('swDucking', () => state.mic.ducking, v => {
+  state.mic.ducking = v;
+  $('duckingOpts').style.display = v ? 'block' : 'none';
+  applyDucking();   // applique/retire immédiatement selon les sons en cours
+});
+$('duckingOpts').style.display = state.mic.ducking ? 'block' : 'none';
+bindVol('duckAmount', 'duckAmountLbl', () => fin(state.mic.duckAmount, 0.6),
+  v => { state.mic.duckAmount = v; applyDucking(); });
 
 $('btnSettings').addEventListener('click', () => $('settings').classList.toggle('open'));
 $('settingsClose').addEventListener('click', () => $('settings').classList.remove('open'));
@@ -2667,24 +2719,147 @@ function switchTab(tab) {
 // Liste dynamique des touches assignées aux sons (onglet Guide)
 function renderGuideKeys() {
   const box = $('guideKeys');
+  box.innerHTML = '';
+
+  // Bouton « ➕ Assigner une touche à un son » (ouvre un sélecteur de son)
+  const add = document.createElement('button');
+  add.className = 'gk-add';
+  add.textContent = '➕ Assigner une touche à un son';
+  add.addEventListener('click', () => openAssignKeyPicker());
+  box.appendChild(add);
+
   const entries = Object.entries(state.hotkeys);
   if (!entries.length) {
-    box.innerHTML = '<div class="hint">Aucune touche assignée pour l\'instant — clic droit sur un son → « Assigner une touche ».</div>';
+    const empty = document.createElement('div');
+    empty.className = 'hint';
+    empty.style.marginTop = '8px';
+    empty.textContent = 'Aucune touche assignée pour l\'instant. Clique sur ➕ ci-dessus, ou fais un clic droit sur un son.';
+    box.appendChild(empty);
     return;
   }
-  box.innerHTML = '';
   for (const [acc, file] of entries.sort((a, b) => a[0].localeCompare(b[0]))) {
     const s = sounds.find(x => x.file === file);
     const div = document.createElement('div');
-    div.className = 'gk';
+    div.className = 'gk gk-action';
     const keys = acc.split('+').map(k => '<kbd>' + esc(k) + '</kbd>').join('+');
     div.innerHTML = '<span>' + keys + '</span>';
+    // Nom cliquable -> joue le son (aperçu)
     const name = document.createElement('span');
+    name.className = 'gk-name';
     name.textContent = s ? s.name : file;
+    name.title = s ? 'Cliquer pour jouer' : 'Son introuvable (déplacé ou supprimé)';
+    if (s) name.addEventListener('click', () => playSound(s));
+    else name.style.opacity = '.5';
     div.appendChild(name);
+    // Bouton changer la touche (réutilise la capture existante)
+    const edit = document.createElement('button');
+    edit.className = 'gk-del';
+    edit.textContent = '⌨️';
+    edit.title = 'Changer la touche';
+    if (s) edit.addEventListener('click', (e) => { e.stopPropagation(); captureKey(s); });
+    else edit.style.display = 'none';
+    div.appendChild(edit);
+    // Bouton retirer la touche
+    const del = document.createElement('button');
+    del.className = 'gk-del';
+    del.textContent = '✕';
+    del.title = 'Retirer ce raccourci';
+    del.addEventListener('click', (e) => {
+      e.stopPropagation();
+      delete state.hotkeys[acc];
+      saveState();
+      applyGlobalHotkeys();
+      renderGuideKeys();
+      render();   // met à jour le badge « touche » sur la tuile
+      toast('⌨️ Raccourci retiré');
+    });
+    div.appendChild(del);
     box.appendChild(div);
   }
+
+  // ----- Raccourcis SYSTÈME (replay, looper) : réattribuables ici aussi -----
+  const sysTitle = document.createElement('div');
+  sysTitle.className = 'hint';
+  sysTitle.style.cssText = 'margin:14px 0 4px;font-weight:700;color:var(--text)';
+  sysTitle.textContent = '⚙️ Raccourcis système';
+  box.appendChild(sysTitle);
+
+  // waiting = true -> la ligne est EN COURS de capture (affiche « Appuie… »)
+  const sysRow = (label, current, waiting, onChange) => {
+    const div = document.createElement('div');
+    div.className = 'gk gk-action' + (waiting ? ' gk-capturing' : '');
+    div.innerHTML = '<span>' + (waiting
+      ? '<span style="color:var(--yellow)">⏳ Appuie…</span>'
+      : (current ? '<kbd>' + esc(current) + '</kbd>' : '<span style="color:var(--text-dim)">—</span>')) + '</span>';
+    const name = document.createElement('span');
+    name.className = 'gk-name'; name.style.cursor = 'default'; name.textContent = label;
+    div.appendChild(name);
+    const edit = document.createElement('button');
+    edit.className = 'gk-del'; edit.style.opacity = '1';
+    edit.textContent = waiting ? '✕' : '⌨️';
+    edit.title = waiting ? 'Annuler' : 'Changer la touche';
+    edit.addEventListener('click', (e) => { e.stopPropagation(); onChange(); });
+    div.appendChild(edit);
+    box.appendChild(div);
+  };
+
+  sysRow('⏺️ Figer le replay (dernières secondes)', grabKeyLabel(state.replay.grabHotkey), capturingReplayGrab, () => {
+    capturingReplayGrab = !capturingReplayGrab;   // re-clic = annule
+    if (typeof refreshReplayGrabKeyUI === 'function') refreshReplayGrabKeyUI();
+    renderGuideKeys();
+    if (capturingReplayGrab) toast('⌨️ Appuie sur la nouvelle touche (Échap pour annuler)');
+  });
+  const lp = state.replay.looper || {};
+  const looperRow = (label, field, key) => sysRow(label, grabKeyLabel(key), capturingLooperKey === field, () => {
+    capturingLooperKey = (capturingLooperKey === field) ? null : field;
+    if (typeof refreshLooperKeys === 'function') refreshLooperKeys();
+    renderGuideKeys();
+    if (capturingLooperKey) toast('⌨️ Appuie sur la touche (Échap pour annuler)');
+  });
+  looperRow('🔴 Looper : capturer', 'captureKey', lp.captureKey);
+  looperRow('🔁 Looper : boucle on/off', 'toggleKey', lp.toggleKey);
+  looperRow('▶️ Looper : rejouer', 'retriggerKey', lp.retriggerKey);
 }
+
+// Sélecteur de son pour assigner une touche (depuis le Guide). Overlay léger créé
+// à la volée : champ de recherche + liste filtrée ; un clic lance la capture clavier.
+function openAssignKeyPicker() {
+  if (!sounds.length) { toast('Aucun son à assigner pour l\'instant.'); return; }
+  const ov = document.createElement('div');
+  ov.className = 'keypick-ov';
+  ov.innerHTML =
+    '<div class="keypick-box">' +
+      '<div class="keypick-head">⌨️ Choisis un son à assigner</div>' +
+      '<input class="keypick-search" type="text" placeholder="🔍 Rechercher un son…" autocomplete="off">' +
+      '<div class="keypick-list"></div>' +
+      '<div class="keypick-foot"><button class="keypick-cancel">Annuler</button></div>' +
+    '</div>';
+  document.body.appendChild(ov);
+  const search = ov.querySelector('.keypick-search');
+  const list = ov.querySelector('.keypick-list');
+  const close = () => ov.remove();
+  const fill = (q) => {
+    const nq = norm(q.trim());
+    list.innerHTML = '';
+    const items = (nq ? sounds.filter(s => norm(s.name).includes(nq)) : sounds).slice(0, 80);
+    for (const s of items) {
+      const row = document.createElement('div');
+      row.className = 'keypick-item';
+      const cur = keyFor(s.file);
+      row.innerHTML = '<span>' + esc(s.name) + '</span>' + (cur ? '<span class="keypick-cur"><kbd>' + esc(cur) + '</kbd></span>' : '');
+      row.addEventListener('click', () => { close(); captureKey(s); });
+      list.appendChild(row);
+    }
+    if (!items.length) list.innerHTML = '<div class="hint" style="padding:10px">Aucun son ne correspond.</div>';
+  };
+  fill('');
+  search.addEventListener('input', () => fill(search.value));
+  search.addEventListener('keydown', (e) => { e.stopPropagation(); if (e.key === 'Escape') close(); });
+  ov.querySelector('.keypick-cancel').addEventListener('click', close);
+  ov.addEventListener('mousedown', (e) => { if (e.target === ov) close(); });
+  search.focus();
+}
+
 document.querySelectorAll('.tab').forEach(t => t.addEventListener('click', () => switchTab(t.dataset.tab)));
 $('voiceEnableMic').addEventListener('click', () => {
   state.mic.enabled = true; $('swMic').checked = true; saveState();
@@ -2822,6 +2997,8 @@ function applyTheme() {
   if (t === 'discord') delete document.body.dataset.theme;
   else document.body.dataset.theme = t;
   document.querySelectorAll('.theme-dot').forEach(d => d.classList.toggle('sel', d.dataset.theme === t));
+  // recolore les fonds d'écran qui suivent l'accent (si la fonction est déjà définie)
+  if (typeof refreshThemedBackgrounds === 'function') refreshThemedBackgrounds();
 }
 {
   const row = $('themeRow');
@@ -2836,6 +3013,66 @@ function applyTheme() {
     row.appendChild(d);
   }
   applyTheme();
+}
+
+// Fonds d'écran décoratifs (indépendants de la couleur d'accent)
+const BACKGROUNDS = {
+  none:      'Aucun (uni)',
+  hexa:      'Hexagones',
+  arcade:    'Arcade (geek)',
+  aurora:    'Aurora (coloré)',
+  dots:      'Points',
+  carbon:    'Carbone',
+  circuit:   'Circuit (PCB)',
+  triangles: 'Triangles',
+  matrix:    'Matrix',
+  waves:     'Vagues',
+  stars:     'Étoiles',
+};
+// Génère les motifs SVG data-URI qui suivent la COULEUR D'ACCENT du thème.
+// (Les data:URI ne comprennent pas currentColor : on injecte la couleur à la volée
+// et on la passe au CSS via des variables --bgimg-*.) Appelée au changement de thème.
+function refreshThemedBackgrounds() {
+  const rs = getComputedStyle(document.body);
+  let accent = (rs.getPropertyValue('--blurple') || '#5865f2').trim();
+  // AMOLED met --blurple à noir : illisible en fond sombre -> repli sur un bleu doux
+  if (/^#0{3,6}$/i.test(accent) || accent === 'black') accent = '#5865f2';
+  const c = encodeURIComponent(accent);
+  const svg = (w, h, inner) =>
+    `url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='${w}' height='${h}' viewBox='0 0 ${w} ${h}'%3E${inner}%3C/svg%3E")`;
+  const root = document.documentElement.style;
+  // Hexagones (pavage continu 60x104)
+  root.setProperty('--bgimg-hexa', svg(60, 104,
+    `%3Cg fill='none' stroke='${c}' stroke-width='1.4' stroke-opacity='0.5'%3E%3Cpath d='M15 0 L45 0 L60 26 L45 52 L15 52 L0 26 Z'/%3E%3Cpath d='M15 52 L45 52 L60 78 L45 104 L15 104 L0 78 Z'/%3E%3Cpath d='M45 0 L60 -26 M15 0 L0 -26 M45 52 L60 78 M15 52 L0 78'/%3E%3C/g%3E`));
+  // Arcade (invader 8-bit)
+  root.setProperty('--bgimg-arcade', svg(64, 64,
+    `%3Cg fill='${c}' fill-opacity='0.45'%3E%3Cpath d='M20 8h2v2h-2z M24 6h2v2h-2z M22 6h-2v2h-2v2h-2v2h-2v4h2v-2h2v2h6v-2h2v2h2v-4h-2v-2h-2v-2h-2v-2z'/%3E%3Crect x='46' y='42' width='2' height='2'/%3E%3Crect x='44' y='44' width='2' height='2'/%3E%3Crect x='48' y='44' width='2' height='2'/%3E%3Crect x='42' y='46' width='10' height='2'/%3E%3Crect x='44' y='48' width='2' height='2'/%3E%3Crect x='48' y='48' width='2' height='2'/%3E%3C/g%3E`));
+  // Triangles
+  root.setProperty('--bgimg-triangles', svg(60, 52,
+    `%3Cg fill='none' stroke='${c}' stroke-width='1.2' stroke-opacity='0.4'%3E%3Cpath d='M0 52 L15 0 L30 52 L45 0 L60 52 M0 52 H60 M-15 0 H75'/%3E%3C/g%3E`));
+}
+
+function applyBackground() {
+  if (state.bg === 'grid') state.bg = 'hexa';   // migration : ancien nom -> nouveau
+  refreshThemedBackgrounds();
+  const b = BACKGROUNDS[state.bg] ? state.bg : 'none';
+  if (b === 'none') delete document.body.dataset.bg;
+  else document.body.dataset.bg = b;
+  document.querySelectorAll('.bg-dot').forEach(d => d.classList.toggle('sel', d.dataset.bg === b));
+}
+{
+  const row = $('bgRow');
+  if (row) {
+    for (const [name, label] of Object.entries(BACKGROUNDS)) {
+      const d = document.createElement('div');
+      d.className = 'bg-dot';
+      d.dataset.bg = name;
+      d.title = label;
+      d.addEventListener('click', () => { state.bg = name; saveState(); applyBackground(); });
+      row.appendChild(d);
+    }
+    applyBackground();
+  }
 }
 
 $('btnExport').addEventListener('click', async () => {
@@ -4308,6 +4545,19 @@ $('vidPlayer').addEventListener('click', (e) => { if (e.target === $('vidPlayer'
 })();
 
 /* ================== Événements Electron ================== */
+// Quand un champ de saisie prend le focus, on SUSPEND les raccourcis globaux : sinon
+// une touche simple assignée (F1/F2/F3 du looper, ` du replay, une lettre…) serait
+// avalée par le raccourci OS au lieu d'être tapée dans le champ. On les réactive à la
+// perte de focus. (Délégation : couvre aussi les champs créés dynamiquement.)
+const isTextField = (el) => el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA') &&
+  !['range', 'checkbox', 'radio', 'button', 'file', 'color'].includes(el.type);
+document.addEventListener('focusin', (e) => { if (isTextField(e.target)) window.sb.suspendHotkeys(); });
+document.addEventListener('focusout', (e) => { if (isTextField(e.target)) window.sb.resumeHotkeys(); });
+// filet de sécurité : à la perte de focus de la fenêtre, on réactive (les raccourcis
+// doivent marcher en jeu). Au retour, on re-suspend si un champ texte est encore actif.
+window.addEventListener('blur', () => window.sb.resumeHotkeys());
+window.addEventListener('focus', () => { if (isTextField(document.activeElement)) window.sb.suspendHotkeys(); });
+
 window.sb.onSoundsChanged(() => loadSounds());
 window.sb.onHotkey((acc) => { const f = state.hotkeys[acc]; if (f) playSound(sounds.find(x => x.file === f)); });
 window.sb.onStopAll(() => stopAll());
@@ -4324,6 +4574,7 @@ $('btnOverlay').addEventListener('click', () => window.sb.overlay.toggle());
   await hydrateStateFromDisk();   // fichier state.json = source de vérité (anti-perte d'icônes)
   // ré-applique les réglages visuels initialisés au top-level avant l'hydratation
   try { applyTheme(); } catch {}
+  try { applyBackground(); } catch {}
   try { applyViewBtn(); } catch {}
   info = await window.sb.getInfo();
   $('dirPath').textContent = info.soundsDir;

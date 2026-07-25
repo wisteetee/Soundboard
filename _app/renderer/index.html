@@ -671,6 +671,19 @@
           Plus haut = plus silencieux mais peut rogner les tout débuts de mots. 0 = laisse le micro toujours ouvert.</div>
         </div>
       </div>
+
+      <div class="ducking-block">
+        <label class="row" style="margin-top:10px">
+          <label class="switch"><input type="checkbox" id="swDucking"><span class="sl"></span></label>
+          <span>🎚️ Baisser ma voix pendant un son <b>(ducking)</b></span>
+        </label>
+        <div class="hint">Quand un son du soundboard joue, ta voix micro baisse automatiquement pour
+        ne pas le couvrir, puis remonte à la fin. Pratique pour les memes en pleine conversation.</div>
+        <div id="duckingOpts" style="display:none">
+          <div class="vol">🔉 <input type="range" id="duckAmount" min="0" max="100" value="60"><span id="duckAmountLbl">60%</span></div>
+          <div class="hint" style="opacity:.7">Intensité : de combien ta voix baisse pendant un son. 100% = voix coupée, 0% = aucun effet.</div>
+        </div>
+      </div>
     </div>
 
     <div class="card">
@@ -693,6 +706,9 @@
         <label class="switch"><input type="checkbox" id="swNorm"><span class="sl"></span></label>
         Normaliser le volume des sons importés (même niveau sonore partout)
       </label>
+      <button class="testbtn" id="btnNormalizeAll" style="margin-top:8px">📊 Normaliser tous les sons existants</button>
+      <div class="hint">Ramène <b>toute ta bibliothèque</b> au même niveau sonore d'un coup. Modifie les fichiers
+        (irréversible) et peut prendre un moment sur beaucoup de sons.</div>
       <label class="row">
         <label class="switch"><input type="checkbox" id="swTray" checked><span class="sl"></span></label>
         Réduire dans la zone de notification à la fermeture
@@ -718,6 +734,8 @@
     <div class="card">
       <h3><span>🎨 Thème de couleur</span></h3>
       <div class="theme-row" id="themeRow"></div>
+      <div class="hint" style="margin-top:10px">🖼️ Fond d'écran</div>
+      <div class="bg-row" id="bgRow"></div>
     </div>
 
     <!-- Export / import de la bibliothèque -->

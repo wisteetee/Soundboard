@@ -26,8 +26,135 @@ body[data-theme="amoled"] {
   --border: #2a2a30;
 }
 
+/* ---- Fonds d'écran (data-bg sur body) : couche décorative FIXE derrière l'UI ----
+   Indépendants des thèmes de couleur : on peut combiner une couleur + un motif.
+   Tout en CSS/SVG data-URI (pas d'image externe : la CSP interdit les hôtes tiers). */
+body::before {
+  content: "";
+  position: fixed; inset: 0; z-index: -1;
+  pointer-events: none;
+  background: transparent;
+  opacity: .55;
+}
+/* 1) Hexagones — pavage hexagonal CONTINU (couleur = accent du thème, injectée en JS) */
+body[data-bg="hexa"]::before {
+  background-image: var(--bgimg-hexa);
+  background-size: 60px 104px;
+  opacity: .5;
+}
+/* 2) Arcade — invaders pixel-art 8-bit, clin d'œil geek (couleur = accent) */
+body[data-bg="arcade"]::before {
+  background-image: var(--bgimg-arcade);
+  background-size: 96px 96px;
+  opacity: .4;
+}
+/* 3) Aurora — dégradés radiaux doux, colorés, lentement animés */
+body[data-bg="aurora"]::before {
+  background:
+    radial-gradient(40% 40% at 15% 20%, color-mix(in srgb, var(--blurple) 40%, transparent), transparent 70%),
+    radial-gradient(45% 45% at 85% 30%, color-mix(in srgb, var(--green) 30%, transparent), transparent 70%),
+    radial-gradient(50% 50% at 60% 90%, color-mix(in srgb, var(--blurple) 25%, transparent), transparent 70%);
+  opacity: .3;
+  animation: auroraShift 24s ease-in-out infinite alternate;
+}
+@keyframes auroraShift {
+  0%   { transform: translate(0, 0) scale(1); }
+  100% { transform: translate(-3%, 2%) scale(1.08); }
+}
+@media (prefers-reduced-motion: reduce) {
+  body[data-bg="aurora"]::before,
+  body[data-bg="matrix"]::before,
+  body[data-bg="waves"]::before { animation: none; }
+}
+/* 4) Points — grille de points fins, minimaliste (couleur = accent, suit le thème) */
+body[data-bg="dots"]::before {
+  background-image: radial-gradient(circle, var(--blurple) 1.3px, transparent 1.6px);
+  background-size: 20px 20px;
+  opacity: .4;
+}
+/* 5) Carbone — fines diagonales croisées, texture fibre de carbone */
+body[data-bg="carbon"]::before {
+  background-image:
+    repeating-linear-gradient(45deg, rgba(255,255,255,.04) 0 1px, transparent 1px 7px),
+    repeating-linear-gradient(-45deg, rgba(255,255,255,.04) 0 1px, transparent 1px 7px);
+  opacity: .8;
+}
+/* 6) Circuit — traces de circuit imprimé avec pastilles (PCB), tech */
+body[data-bg="circuit"]::before {
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='80' height='80' viewBox='0 0 80 80'%3E%3Cg fill='none' stroke='%2323a559' stroke-width='1.2' stroke-opacity='0.45'%3E%3Cpath d='M0 20 H30 V50 H80 M20 80 V50 M50 0 V30 H80 M60 30 V60 H40'/%3E%3C/g%3E%3Cg fill='%2323a559' fill-opacity='0.5'%3E%3Ccircle cx='30' cy='20' r='2.5'/%3E%3Ccircle cx='30' cy='50' r='2.5'/%3E%3Ccircle cx='50' cy='30' r='2.5'/%3E%3Ccircle cx='60' cy='60' r='2.5'/%3E%3Ccircle cx='40' cy='60' r='2.5'/%3E%3C/g%3E%3C/svg%3E");
+  background-size: 80px 80px;
+  opacity: .5;
+}
+/* 7) Triangles — pavage triangulaire géométrique (couleur = accent) */
+body[data-bg="triangles"]::before {
+  background-image: var(--bgimg-triangles);
+  background-size: 60px 52px;
+  opacity: .5;
+}
+/* 8) Matrix — pluie de code vert (dégradés verticaux animés) */
+body[data-bg="matrix"]::before {
+  background-image:
+    repeating-linear-gradient(90deg, transparent 0 14px, rgba(35,165,89,.18) 14px 15px, transparent 15px 28px),
+    linear-gradient(180deg, transparent, rgba(35,165,89,.12));
+  background-size: 28px 100%, 100% 100%;
+  opacity: .5;
+  animation: matrixRain 6s linear infinite;
+}
+@keyframes matrixRain {
+  0%   { background-position: 0 0, 0 0; }
+  100% { background-position: 0 200px, 0 0; }
+}
+/* 9) Vagues — ondulations douces horizontales, ambiance rétro synthwave */
+body[data-bg="waves"]::before {
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='120' height='40' viewBox='0 0 120 40'%3E%3Cg fill='none' stroke='%23e64980' stroke-width='1.4' stroke-opacity='0.4'%3E%3Cpath d='M0 20 Q30 0 60 20 T120 20'/%3E%3Cpath d='M0 34 Q30 14 60 34 T120 34'/%3E%3C/g%3E%3C/svg%3E");
+  background-size: 120px 40px;
+  opacity: .55;
+  animation: wavesShift 12s linear infinite;
+}
+@keyframes wavesShift { 0% { background-position: 0 0; } 100% { background-position: 120px 0; } }
+/* 10) Étoiles — champ d'étoiles/espace (points de tailles variées) */
+body[data-bg="stars"]::before {
+  background-image:
+    radial-gradient(1.5px 1.5px at 20px 30px, #fff, transparent),
+    radial-gradient(1px 1px at 70px 60px, #cbd3ff, transparent),
+    radial-gradient(1.5px 1.5px at 120px 20px, #fff, transparent),
+    radial-gradient(1px 1px at 160px 90px, #bcc6ff, transparent),
+    radial-gradient(2px 2px at 100px 120px, #fff, transparent),
+    radial-gradient(1px 1px at 40px 100px, #dfe4ff, transparent);
+  background-size: 200px 160px;
+  opacity: .5;
+}
+
 /* Sélecteur de thème (pastilles) */
 .theme-row { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 8px; }
+/* Sélecteur de fond d'écran (vignettes) */
+.bg-row { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 8px; }
+.bg-dot {
+  width: 46px; height: 32px; border-radius: 7px; cursor: pointer;
+  border: 2px solid transparent; overflow: hidden; position: relative;
+  background: var(--bg-dark);
+  transition: transform .12s, border-color .12s;
+}
+.bg-dot:hover { transform: scale(1.08); }
+.bg-dot.sel { border-color: var(--text); }
+.bg-dot::after {
+  position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
+  font-size: 15px;
+}
+.bg-dot[data-bg="none"]      { background: var(--bg); }
+.bg-dot[data-bg="none"]::after      { content: "∅"; font-size: 16px; color: var(--text-dim); }
+.bg-dot[data-bg="hexa"]::after      { content: "⬡"; font-size: 18px; color: var(--blurple); }
+.bg-dot[data-bg="arcade"]::after    { content: "👾"; }
+.bg-dot[data-bg="aurora"]    { background: radial-gradient(60% 60% at 30% 30%, var(--blurple), transparent), radial-gradient(60% 60% at 80% 70%, var(--green), var(--bg-dark)); }
+.bg-dot[data-bg="dots"]      { background: var(--bg-dark) radial-gradient(circle, var(--blurple) 1px, transparent 1.4px) 0 0 / 7px 7px; }
+.bg-dot[data-bg="carbon"]    { background: var(--bg-dark) repeating-linear-gradient(45deg, rgba(255,255,255,.12) 0 1px, transparent 1px 5px); }
+.bg-dot[data-bg="circuit"]::after   { content: "🖧"; font-size: 14px; color: var(--green); }
+.bg-dot[data-bg="triangles"]::after { content: "▲"; font-size: 13px; color: var(--blurple); }
+.bg-dot[data-bg="matrix"]    { background: var(--bg-dark); }
+.bg-dot[data-bg="matrix"]::after    { content: "010"; font-size: 9px; font-weight: 700; color: var(--green); letter-spacing: 1px; }
+.bg-dot[data-bg="waves"]::after     { content: "〜"; font-size: 18px; color: #e64980; }
+.bg-dot[data-bg="stars"]     { background: #0a0a1a; }
+.bg-dot[data-bg="stars"]::after     { content: "✦"; font-size: 13px; color: #fff; }
 .theme-dot {
   width: 30px; height: 30px; border-radius: 50%; cursor: pointer;
   border: 2px solid transparent; transition: transform .12s, border-color .12s;
@@ -702,6 +829,55 @@ kbd {
   border-bottom-width: 2px; border-radius: 5px;
   padding: 1px 6px; font-size: 11px; font-family: inherit;
 }
+/* Entrées actionnables de la liste des raccourcis (Guide) */
+.gk-action { align-items: center; border-radius: 6px; padding: 4px 6px; }
+.gk-action:hover { background: var(--panel); }
+.gk-name { flex: 1; cursor: pointer; }
+.gk-name:hover { color: var(--blurple); text-decoration: underline; }
+.gk-del {
+  flex-shrink: 0; background: transparent; border: none; cursor: pointer;
+  color: var(--text-dim); font-size: 13px; padding: 2px 6px; border-radius: 5px;
+  opacity: 0; transition: opacity .12s, color .12s, background .12s;
+}
+.gk-action:hover .gk-del { opacity: 1; }
+.gk-del:hover { color: var(--red); background: var(--bg-dark); }
+.gk-add {
+  display: block; width: 100%; margin-bottom: 8px;
+  font-size: 12.5px; padding: 8px; text-align: center;
+  background: var(--panel); border: 1px dashed var(--border); border-radius: 7px;
+  color: var(--text); cursor: pointer;
+}
+.gk-add:hover { border-color: var(--blurple); color: var(--blurple); }
+.gk-capturing { background: rgba(240,178,50,.12); box-shadow: inset 0 0 0 1px var(--yellow); border-radius: 6px; }
+
+/* Sélecteur de son pour assigner une touche (overlay du Guide) */
+.keypick-ov {
+  position: fixed; inset: 0; z-index: 200;
+  background: rgba(0,0,0,.55);
+  display: flex; align-items: center; justify-content: center;
+}
+.keypick-box {
+  width: 420px; max-width: 92vw; max-height: 70vh;
+  background: var(--panel); border: 1px solid var(--border); border-radius: 12px;
+  display: flex; flex-direction: column; overflow: hidden;
+  box-shadow: 0 10px 40px rgba(0,0,0,.5);
+}
+.keypick-head { padding: 14px 16px; font-weight: 700; border-bottom: 1px solid var(--border); }
+.keypick-search {
+  margin: 10px 12px; padding: 9px 12px;
+  background: var(--bg-dark); border: 1px solid var(--border); border-radius: 8px;
+  color: var(--text); font-size: 13.5px; outline: none;
+}
+.keypick-search:focus { border-color: var(--blurple); }
+.keypick-list { overflow-y: auto; padding: 0 8px 8px; }
+.keypick-item {
+  display: flex; align-items: center; justify-content: space-between; gap: 10px;
+  padding: 8px 10px; border-radius: 7px; cursor: pointer; font-size: 13px;
+}
+.keypick-item:hover { background: var(--bg-dark); }
+.keypick-cur { color: var(--text-dim); }
+.keypick-foot { padding: 10px 12px; border-top: 1px solid var(--border); text-align: right; }
+.keypick-cancel { font-size: 12.5px; padding: 6px 14px; }
 
 /* ---- Onglet Dire (TTS) ---- */
 .tts-text {

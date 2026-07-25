@@ -809,10 +809,24 @@ function debounce(fn, ms) {
 }
 function watchSounds() {
   if (watcher) { try { watcher.close(); } catch {} watcher = null; }
+  const notify = debounce(() => {
+    if (win && !win.isDestroyed()) win.webContents.send('sounds-changed');
+  }, 400);
   try {
-    watcher = fs.watch(soundsDir(), { recursive: true }, debounce(() => {
-      if (win && !win.isDestroyed()) win.webContents.send('sounds-changed');
-    }, 400));
+    watcher = fs.watch(soundsDir(), { recursive: true }, (_evt, filename) => {
+      // IMPORTANT : state.json est écrit DANS le dossier des sons à CHAQUE clic
+      // (saveState). On l'ignore, sinon chaque lecture relancerait un scan complet
+      // (loadSounds) qui ré-ordonne la liste « plus joués ». Idem fichiers techniques.
+      if (filename) {
+        const norm = String(filename).replace(/\\/g, '/');
+        const base = norm.split('/').pop();
+        // ignore : state/config, et tout fichier dont un segment de chemin commence
+        // par _ ou . (dossiers techniques : _icones, _profils, Enregistrements internes…)
+        if (base === 'state.json' || base === 'config.json') return;
+        if (norm.split('/').some(seg => seg.startsWith('_') || seg.startsWith('.'))) return;
+      }
+      notify();
+    });
   } catch {}
 }
 
@@ -1764,7 +1778,28 @@ ipcMain.handle('choose-sounds-dir', async () => {
 
 ipcMain.handle('open-sounds-folder', () => shell.openPath(soundsDir()));
 
-ipcMain.handle('set-global-hotkeys', (_e, map, enabled, replayGrab, looper) => registerHotkeys(map, enabled, replayGrab, looper));
+// Mémorise les derniers réglages de raccourcis pour pouvoir les ré-enregistrer
+// après une suspension (quand un champ de saisie de l'app a le focus).
+let lastHotkeyArgs = null;
+let hotkeysSuspended = false;
+ipcMain.handle('set-global-hotkeys', (_e, map, enabled, replayGrab, looper) => {
+  lastHotkeyArgs = [map, enabled, replayGrab, looper];
+  if (hotkeysSuspended) return { registered: [], failed: [] };  // ne pas ré-activer pendant une saisie
+  return registerHotkeys(map, enabled, replayGrab, looper);
+});
+// Suspend les raccourcis GLOBAUX pendant qu'on tape dans un champ de l'app : sinon
+// une touche simple assignée (F1, `, une lettre…) est avalée par le raccourci OS
+// au lieu d'être écrite. Réactivés dès que le champ perd le focus.
+ipcMain.on('suspend-hotkeys', () => {
+  if (hotkeysSuspended) return;
+  hotkeysSuspended = true;
+  globalShortcut.unregisterAll();
+});
+ipcMain.on('resume-hotkeys', () => {
+  if (!hotkeysSuspended) return;
+  hotkeysSuspended = false;
+  if (lastHotkeyArgs) registerHotkeys(...lastHotkeyArgs);
+});
 
 ipcMain.handle('set-open-at-login', (_e, v) => {
   app.setLoginItemSettings({ openAtLogin: !!v });
