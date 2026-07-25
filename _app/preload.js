@@ -5,6 +5,17 @@ const { contextBridge, ipcRenderer, webUtils } = require('electron');
 
 contextBridge.exposeInMainWorld('sb', {
   listSounds: () => ipcRenderer.invoke('list-sounds'),
+  // État persistant (fichier userData, écriture atomique — fiable même après un kill)
+  stateLoad: () => ipcRenderer.invoke('state-load'),
+  stateSave: (obj) => ipcRenderer.invoke('state-save', obj),
+  // Profils (bibliothèques séparées)
+  profiles: {
+    list: () => ipcRenderer.invoke('profiles-list'),
+    create: (name) => ipcRenderer.invoke('profile-create', name),
+    rename: (id, name) => ipcRenderer.invoke('profile-rename', id, name),
+    remove: (id) => ipcRenderer.invoke('profile-delete', id),
+    switch: (id) => ipcRenderer.invoke('profile-switch', id),
+  },
   pickFiles: () => ipcRenderer.invoke('pick-files'),
   importFiles: (paths) => ipcRenderer.invoke('import-files', paths),
   importUrl: (url) => ipcRenderer.invoke('import-url', url),
@@ -17,6 +28,7 @@ contextBridge.exposeInMainWorld('sb', {
   deleteVideoClip: (file) => ipcRenderer.invoke('delete-video-clip', file),
   openVideoClip: (file) => ipcRenderer.invoke('open-video-clip', file),
   revealVideoClips: () => ipcRenderer.invoke('reveal-video-clips'),
+  repairVideoClips: () => ipcRenderer.invoke('repair-video-clips'),
   videoUrl: (file) => 'vid://clips/' + encodeURIComponent(file),
   rename: (file, newName) => ipcRenderer.invoke('rename', file, newName),
   remove: (file) => ipcRenderer.invoke('remove', file),
@@ -32,7 +44,7 @@ contextBridge.exposeInMainWorld('sb', {
   getInfo: () => ipcRenderer.invoke('get-info'),
   chooseSoundsDir: () => ipcRenderer.invoke('choose-sounds-dir'),
   openSoundsFolder: () => ipcRenderer.invoke('open-sounds-folder'),
-  setGlobalHotkeys: (map, enabled, replayGrab) => ipcRenderer.invoke('set-global-hotkeys', map, enabled, replayGrab),
+  setGlobalHotkeys: (map, enabled, replayGrab, looper) => ipcRenderer.invoke('set-global-hotkeys', map, enabled, replayGrab, looper),
   setOpenAtLogin: (v) => ipcRenderer.invoke('set-open-at-login', v),
   setMinimizeToTray: (v) => ipcRenderer.invoke('set-minimize-to-tray', v),
   // URL de lecture pour un fichier son (protocole custom snd://)
@@ -46,6 +58,7 @@ contextBridge.exposeInMainWorld('sb', {
   onHotkey: (cb) => ipcRenderer.on('hotkey', (_e, acc) => cb(acc)),
   onStopAll: (cb) => ipcRenderer.on('stop-all', cb),
   onReplaySave: (cb) => ipcRenderer.on('replay-save', cb),
+  onLooper: (cb) => ipcRenderer.on('looper', (_e, action) => cb(action)),
   onOverlayPlay: (cb) => ipcRenderer.on('overlay-play', (_e, file) => cb(file)),
   onOverlayRefresh: (cb) => ipcRenderer.on('overlay-refresh', cb),
 

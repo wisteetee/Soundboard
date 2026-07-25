@@ -16,14 +16,9 @@ en temps réel (type Voicemod), le tout envoyé à tes amis à travers un micro 
 - **Ajout facile** : glisser-déposer sur la fenêtre, bouton « ➕ Ajouter des sons », ou copie directe dans le dossier
 - **Icônes personnalisables** : clic droit → « 🎨 Changer l'icône » → emoji, couleur, ou **ta propre image**
 - **Raccourcis clavier globaux** : assigne une touche (ex. `Ctrl+Alt+1`) qui marche **même en jeu ou fenêtre non focus**
-- **Favoris** (⭐), **recherche**, **son au hasard** (🎲), section **🔥 Les plus joués**
-- **Catégories complètes** : créer/renommer/supprimer (📁➕), **drag & drop** entre catégories, repliables d'un clic
-- **Volume par son** : molette de la souris sur une tuile
-- **🎧 Écoute privée** : Shift+clic joue le son dans ton casque **sans** l'envoyer à Discord
-- **Tri** : nom / plus joués / récents · **Import depuis une URL** (🌐, lien direct .mp3)
-- **✂️ Éditeur de découpe** : clic droit → « Éditer / Découper » → forme d'onde, poignées de début/fin, fondus, aperçu. Remplace le son ou crée une copie (découpe MP3 précise via ffmpeg, téléchargé une seule fois)
+- **Favoris** (⭐), **recherche**, **son au hasard** (🎲), **catégories** (via sous-dossiers)
 - **Renommer / supprimer** au clic droit (les suppressions vont dans une corbeille, rien n'est perdu)
-- **Double sortie** : volume vers Discord + retour dans ton casque, **fondu** propre sur Stop
+- **Double sortie** : volume vers Discord + retour dans ton casque pour t'entendre
 
 ### 🎙️ Onglet « Voix » (modulateur temps réel)
 14 voix prêtes à l'emploi, appliquées en direct pendant que tu parles :
@@ -35,21 +30,10 @@ en temps réel (type Voicemod), le tout envoyé à tes amis à travers un micro 
 | 🕳️ Grotte / Écho | 📻 Radio | 📞 Téléphone | 🔊 Talkie-walkie |
 | 👽 Alien | 👻 Fantôme | | |
 
-L'onglet Voix est découpé en deux sections :
-
-**🎛️ Modification voix** — effets audio instantanés, sans installation :
 - **Pitch** (grave/aigu) via [SoundTouchJS](https://github.com/cutterjs/soundtouchjs) dans un AudioWorklet
 - **Effets** (robot, réverb, écho, radio, téléphone, distorsion, trémolo) en Web Audio natif
 - **🎧 Retour casque** pour t'entendre transformé et régler tes effets
 - Tu peux **parler avec une voix modifiée ET jouer des sons en même temps**
-
-**🧠 IA personnalités** — conversion de voix par IA (RVC), en temps réel :
-- Transforme ta voix en **une autre personne** (ex. Emmanuel Macron) pendant que tu parles
-- Basé sur des modèles **RVC** (`.pth` + `.index`) placés dans le dossier `Voix IA/<NomDuModèle>/`
-- Réglages **tonalité** (demi-tons) et **ressemblance** (index), en direct
-- Nécessite un **backend Python + GPU** (voir « Installer la voix IA » ci-dessous)
-- ⚠️ Latence ~0,3–0,5 s (inhérente au RVC temps réel). Le live IA prend le micro et
-  désactive automatiquement les effets classiques.
 
 ### 🖥️ Application native
 - Se réduit dans la **zone de notification** (continue de tourner en fond)
@@ -86,19 +70,9 @@ la sortie de ce câble.
 ```
 
 ### 1. Installer le câble virtuel (une seule fois)
-
-**Le plus simple :** au premier lancement, si le câble est absent, l'app propose un
-**assistant en 1 clic** (« ⚡ Installer le câble audio »). Elle télécharge et installe
-VB-Cable pour toi — accepte simplement la fenêtre d'autorisation Windows (administrateur),
-puis **redémarre le PC** quand elle te le propose.
-
-<details>
-<summary>Installation manuelle (si tu préfères)</summary>
-
 1. Télécharge **[VB-Audio Virtual Cable](https://vb-audio.com/Cable/)** (gratuit)
 2. Dézippe, clic droit sur `VBCABLE_Setup_x64.exe` → **Exécuter en tant qu'administrateur** → *Install Driver*
 3. **Redémarre le PC**
-</details>
 
 ### 2. Configurer le Soundboard (réglages ⚙️)
 | Réglage | Valeur | Rôle |
@@ -115,37 +89,6 @@ puis **redémarre le PC** quand elle te le propose.
 
 ---
 
-## 🧠 Installer la voix IA (RVC) — optionnel
-
-La section **« IA personnalités »** de l'onglet Voix a besoin d'un moteur Python (PyTorch + RVC).
-C'est **optionnel** : le reste de l'app fonctionne sans. Prévois un **GPU NVIDIA** et plusieurs Go d'espace.
-
-### Installation (une seule fois)
-1. Ouvre l'onglet **🎙️ Voix** → section **🧠 IA personnalités** → **« 📥 Installer la voix IA »**.
-2. L'app installe automatiquement un **Python 3.10 dédié**, **PyTorch CUDA**, et **rvc-python**
-   (~3–4 Go). La progression s'affiche dans le journal. Au **premier live**, les modèles
-   auxiliaires (HuBERT, RMVPE) se téléchargent aussi (quelques centaines de Mo).
-
-> Le backend s'installe dans un environnement isolé et ne pollue pas ton Python système.
-> Il n'est lancé **qu'à la demande** (pas au démarrage de l'app).
-
-### Ajouter une voix (modèle RVC)
-Place un modèle dans `Voix IA/<NomDeLaVoix>/` avec un fichier `.pth` (le modèle) et,
-idéalement, un `.index` (améliore le timbre). Exemple fourni : `Voix IA/EmmanuelMacron/`.
-Les voix disponibles apparaissent comme des cartes dans la section IA.
-
-### Utiliser le live IA
-1. Vérifie que **CABLE Input** est bien choisi dans « Sortie vers Discord » (⚙️).
-2. Sélectionne une personnalité, règle la **tonalité** si besoin, puis **« ▶️ Démarrer le live IA »**.
-3. Parle : ta voix convertie part dans le câble virtuel → Discord. Pour t'écouter, active
-   « 🎧 M'entendre » (retour casque).
-
-> 💡 Réglages : garde la **ressemblance (index) basse (0–0.3)** pour un direct fluide —
-> l'index haut améliore le timbre mais ajoute beaucoup de latence. La **tonalité** compense
-> l'écart entre ta voix et la cible (ex. voix grave → cible plus aiguë = monter de quelques demi-tons).
-
----
-
 ## ⌨️ Aide-mémoire
 
 | Action | Comment |
@@ -154,14 +97,8 @@ Les voix disponibles apparaissent comme des cartes dans la section IA.
 | Tout arrêter | Bouton ⏹ ou touche `Échap` (global : `Ctrl+Alt+X`) |
 | Assigner une touche | Clic droit → « Assigner une touche » |
 | Changer l'icône | Clic droit → « 🎨 Changer l'icône » |
-| Découper / raccourcir un son | Clic droit → « ✂️ Éditer / Découper » |
 | Renommer / Supprimer | Clic droit |
 | Favori | ⭐ en haut à gauche de la tuile |
-| Écoute privée (sans Discord) | `Shift+clic` sur la tuile |
-| Volume individuel d'un son | Molette de la souris sur la tuile |
-| Replier une catégorie | Clic sur son en-tête |
-| Déplacer un son de catégorie | Glisser-déposer la tuile |
-| Importer depuis une URL | 🌐 puis coller un lien direct .mp3 |
 | Son au hasard | 🎲 |
 | Modifier sa voix | Onglet « 🎙️ Voix » → clic sur une voix |
 | S'entendre transformé | Onglet Voix → « 🎧 M'entendre » |

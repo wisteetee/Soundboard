@@ -133,6 +133,28 @@ const VOICE_PRESETS = [
          '<ellipse cx="19" cy="20" rx="2.4" ry="3.4" fill="#312e81"/><ellipse cx="29" cy="20" rx="2.4" ry="3.4" fill="#312e81"/>' +
          '<ellipse cx="24" cy="28.5" rx="2.6" ry="3.4" fill="#312e81"/>' +
          '<circle cx="15" cy="14" r="4.5" fill="#fff" opacity=".35"/>' },
+
+  // ----- Nouveaux presets -----
+  { id: 'vador', name: 'Dark Vador', emoji: '🖤', pitch: -7, color: '#374151', desc: 'Grave + respiration métallique',
+    effects: [{ t: 'distortion', amount: 3 }, { t: 'filter', type: 'lowpass', freq: 2600 }, { t: 'reverb', mix: 0.28, seconds: 1.4 }] },
+  { id: 'helium', name: 'Hélium', emoji: '🎈', pitch: 10, color: '#f472b6', desc: 'Voix de ballon très aiguë',
+    effects: [{ t: 'filter', type: 'highshelf', freq: 3000, gain: 4 }] },
+  { id: 'underwater', name: 'Sous l\'eau', emoji: '🌊', pitch: -1, color: '#22d3ee', desc: 'Étouffé + ondulant',
+    effects: [{ t: 'filter', type: 'lowpass', freq: 900, q: 1.2 }, { t: 'tremolo', rate: 3, depth: 0.35 }, { t: 'reverb', mix: 0.3, seconds: 1.8 }] },
+  { id: 'megaphone', name: 'Mégaphone', emoji: '📣', pitch: 0, color: '#f59e0b', desc: 'Annonce criée saturée',
+    effects: [{ t: 'filter', type: 'peaking', freq: 1500, q: 1.5, gain: 10 }, { t: 'filter', type: 'highpass', freq: 500 }, { t: 'distortion', amount: 14 }] },
+  { id: 'god', name: 'Voix de Dieu', emoji: '🌟', pitch: -3, color: '#fcd34d', desc: 'Grave + réverb céleste',
+    effects: [{ t: 'chorus', mix: 0.4, voices: 3 }, { t: 'reverb', mix: 0.6, seconds: 5.5 }] },
+  { id: 'choir', name: 'Chœur', emoji: '🎶', pitch: 0, color: '#818cf8', desc: 'Voix dédoublées',
+    effects: [{ t: 'chorus', mix: 0.6, voices: 4 }, { t: 'reverb', mix: 0.35, seconds: 2 }] },
+  { id: 'witch', name: 'Sorcière', emoji: '🧙', pitch: 5, color: '#a3e635', desc: 'Aigüe + ricanement caverneux',
+    effects: [{ t: 'distortion', amount: 5 }, { t: 'echo', time: 0.22, feedback: 0.35, mix: 0.4 }, { t: 'reverb', mix: 0.35, seconds: 2.5 }] },
+  { id: 'giant', name: 'Géant', emoji: '🗿', pitch: -10, color: '#78716c', desc: 'Très grave et massif',
+    effects: [{ t: 'filter', type: 'lowshelf', freq: 200, gain: 6 }, { t: 'reverb', mix: 0.3, seconds: 2.2 }] },
+  { id: 'vinyl', name: 'Vieux disque', emoji: '🎙️', pitch: 0, color: '#d6a45f', desc: 'Radio d\'époque nasillarde',
+    effects: [{ t: 'filter', type: 'highpass', freq: 400 }, { t: 'filter', type: 'lowpass', freq: 3200 }, { t: 'tremolo', rate: 8, depth: 0.15 }] },
+  { id: 'military', name: 'Radio militaire', emoji: '🪖', pitch: 0, color: '#4d7c0f', desc: 'Talkie brouillé + saturé',
+    effects: [{ t: 'radio' }, { t: 'distortion', amount: 16 }, { t: 'filter', type: 'lowpass', freq: 2800 }] },
 ];
 
 /* ========== Générateurs de nœuds d'effets ========== */
@@ -239,6 +261,37 @@ function makePhone(ctx) {
   return { input, output };
 }
 
+// Filtre biquad générique (passe-bas/haut/peak) — pour mégaphone, sous l'eau, etc.
+function makeFilter(ctx, type, freq, q, gain) {
+  const input = ctx.createGain();
+  const f = ctx.createBiquadFilter();
+  f.type = type || 'lowpass';
+  f.frequency.value = freq ?? 1000;
+  if (q != null) f.Q.value = q;
+  if (gain != null && (type === 'peaking' || type === 'lowshelf' || type === 'highshelf')) f.gain.value = gain;
+  const output = ctx.createGain();
+  input.connect(f); f.connect(output);
+  return { input, output };
+}
+
+// Chœur : dédouble la voix avec de légers retards désaccordés (voix multiple)
+function makeChorus(ctx, mix, voices) {
+  const input = ctx.createGain();
+  const output = ctx.createGain();
+  const dry = ctx.createGain(); dry.gain.value = 1 - (mix ?? 0.5);
+  input.connect(dry); dry.connect(output);
+  const n = voices ?? 3;
+  for (let i = 0; i < n; i++) {
+    const delay = ctx.createDelay(); delay.delayTime.value = 0.012 + i * 0.008;
+    const lfo = ctx.createOscillator(); lfo.frequency.value = 0.15 + i * 0.07;
+    const lfoGain = ctx.createGain(); lfoGain.gain.value = 0.002;
+    lfo.connect(lfoGain); lfoGain.connect(delay.delayTime); lfo.start();
+    const wet = ctx.createGain(); wet.gain.value = (mix ?? 0.5) / n;
+    input.connect(delay); delay.connect(wet); wet.connect(output);
+  }
+  return { input, output };
+}
+
 function makeEffect(ctx, spec) {
   switch (spec.t) {
     case 'reverb': return makeReverb(ctx, spec.mix ?? 0.4, spec.seconds ?? 2);
@@ -248,6 +301,8 @@ function makeEffect(ctx, spec) {
     case 'tremolo': return makeTremolo(ctx, spec.rate ?? 5, spec.depth ?? 0.5);
     case 'radio': return makeRadio(ctx);
     case 'phone': return makePhone(ctx);
+    case 'filter': return makeFilter(ctx, spec.type, spec.freq, spec.q, spec.gain);
+    case 'chorus': return makeChorus(ctx, spec.mix, spec.voices);
     default: return null;
   }
 }
@@ -276,29 +331,40 @@ class VoiceFX {
     }
   }
 
-  // (Re)construit la chaîne pour un preset donné
-  applyPreset(preset) {
+  // (Re)construit la chaîne pour un preset donné.
+  // opts.live = true : garde le nœud pitch ET un filtre de timbre TOUJOURS branchés,
+  // pour que le pad XY puisse les moduler en continu sans reconstruire la chaîne.
+  applyPreset(preset, opts = {}) {
     const ctx = this.ctx;
     // déconnecte l'ancienne chaîne
     try { this.input.disconnect(); } catch {}
     if (this.stNode) { try { this.stNode.disconnect(); } catch {} }
+    if (this._timbre) { try { this._timbre.disconnect(); } catch {} this._timbre = null; }
     for (const n of this._effectNodes) {
       try { n.output.disconnect(); } catch {}
       if (n._osc) { try { n._osc.stop(); } catch {} }
     }
     this._effectNodes = [];
+    this._live = !!opts.live;
 
     let cursor = this.input;
 
-    // 1) Pitch (SoundTouch) si dispo et non nul
+    // 1) Pitch (SoundTouch) si dispo. En mode live, toujours branché (même pitch 0).
     if (this.stReady && this.stNode) {
       const semis = preset.pitch || 0;
       try { this.stNode.pitchSemitones.value = semis; } catch {}
-      if (semis !== 0) {
+      if (semis !== 0 || this._live) {
         cursor.connect(this.stNode);
         cursor = this.stNode;
       }
-      // si pitch nul on saute le nœud pour économiser du CPU / éviter la latence
+    }
+
+    // 1b) Filtre de timbre modulable (pad XY) — un peaking dont on bougera la fréquence
+    if (this._live) {
+      const t = ctx.createBiquadFilter();
+      t.type = 'peaking'; t.frequency.value = 1500; t.Q.value = 1; t.gain.value = 0;
+      cursor.connect(t); cursor = t;
+      this._timbre = t;
     }
 
     // 2) Effets en série
@@ -313,6 +379,20 @@ class VoiceFX {
     // 3) Vers la sortie
     cursor.connect(this.output);
     this._built = true;
+  }
+
+  // Pilotage temps réel du pad XY (sans reconstruire la chaîne)
+  // pitch : demi-tons (-12..+12) · timbre : -1 (sombre) .. +1 (brillant)
+  setXY(pitch, timbre) {
+    if (this.stReady && this.stNode) { try { this.stNode.pitchSemitones.value = pitch; } catch {} }
+    if (this._timbre) {
+      const now = this.ctx.currentTime;
+      // timbre -> gain d'un peaking centré vers l'aigu : +brillant = boost aigus
+      try {
+        this._timbre.frequency.setTargetAtTime(1200 + timbre * 1400, now, 0.02);
+        this._timbre.gain.setTargetAtTime(timbre * 9, now, 0.02);
+      } catch {}
+    }
   }
 
   destroy() {

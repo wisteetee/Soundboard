@@ -73,11 +73,20 @@
         <div class="voice-monitor">
           <label class="switch"><input type="checkbox" id="swVoiceMon"><span class="sl"></span></label>
           <div style="flex:1">
-            <b>🎧 M'entendre (retour casque)</b>
+            <b>🎧 M'entendre parler (voix transformée)</b>
             <div class="hint" style="margin-top:2px">
-              Renvoie ta voix transformée (effets <b>ou</b> IA) dans ton casque — même sans câble
-              virtuel ni Discord, pratique pour tester. Pense à le couper en conversation réelle :
+              Renvoie <b>ta voix transformée</b> (effets <b>ou</b> IA) dans ton casque — pratique
+              pour te régler, même sans câble virtuel ni Discord. Coupe-le en conversation réelle :
               t'entendre avec un léger décalage peut gêner.
+            </div>
+            <div class="voice-mon-out" style="margin-top:8px">
+              <span class="hint" style="min-width:auto">🎧 Casque&nbsp;:</span>
+              <select id="selVoiceMonOut" title="Périphérique de sortie (commun avec les sons)"></select>
+              <button class="testbtn" id="testVoiceMon" style="margin:0">Tester</button>
+            </div>
+            <div class="hint" id="voiceMonOutHint" style="margin-top:4px">
+              Même casque que « Écouter les sons » des réglages. Si tu ne t'entends pas,
+              vérifie que c'est bien ton casque ici.
             </div>
             <div class="vol" style="margin-top:8px">🔊
               <input type="range" id="volVoiceMon" min="0" max="100" value="70">
@@ -91,6 +100,38 @@
       <div class="voice-section-title">🎛️ Modification voix</div>
       <div class="hint" style="margin:-4px 0 12px">Effets audio instantanés (grave, robot, écho, radio…).</div>
       <div id="voiceGrid"></div>
+
+      <!-- Pad XY : contrôle live pitch + timbre -->
+      <details class="adv-card" id="xyCard" style="margin-top:20px">
+        <summary>
+          <span class="adv-ico">🎛️</span>
+          <span class="adv-name">Pad XY <span class="hint">contrôle la hauteur et le timbre en direct, à la souris</span></span>
+        </summary>
+        <div class="adv-body">
+          <div class="hint" style="margin-bottom:10px">
+            Glisse dans le carré : <b>↔ horizontal = hauteur</b> (grave ↔ aigu),
+            <b>↕ vertical = timbre</b> (sombre ↔ brillant). Idéal pour improviser une voix en direct.
+            Active « 🎤 Mon micro → Discord » pour l'entendre.
+          </div>
+          <div class="xy-wrap">
+            <div class="xy-pad" id="xyPad">
+              <div class="xy-grid-x"></div><div class="xy-grid-y"></div>
+              <div class="xy-dot" id="xyDot"></div>
+              <span class="xy-lbl xy-lbl-l">grave</span><span class="xy-lbl xy-lbl-r">aigu</span>
+              <span class="xy-lbl xy-lbl-t">brillant</span><span class="xy-lbl xy-lbl-b">sombre</span>
+            </div>
+            <div class="xy-readout" id="xyReadout">Hauteur 0 · Timbre 0</div>
+            <button class="testbtn" id="xyReset">↺ Recentrer</button>
+          </div>
+        </div>
+      </details>
+
+      <!-- Presets personnalisés -->
+      <div class="voice-section-title" style="margin-top:24px">💾 Mes voix
+        <button class="cat-btn" id="voicePresetSave" title="Sauvegarder la voix actuelle (preset + réglages XY)">➕ Enregistrer la voix actuelle</button>
+      </div>
+      <div class="hint" style="margin:-4px 0 12px">Sauvegarde une combinaison (preset + position du pad XY) pour la rejouer d'un clic ou par raccourci.</div>
+      <div id="customVoiceGrid" class="voice-custom-grid"></div>
 
       <!-- Section 2 : voix IA temps réel via VCClient (moteur pro w-okada / Beatrice) -->
       <div class="voice-section-title" style="margin-top:26px">🧠 IA personnalités <span class="badge ok" style="font-size:10px;vertical-align:middle">temps réel</span></div>
@@ -192,146 +233,46 @@
 
     <!-- ===== Onglet Replay ===== -->
     <div id="replayView" style="display:none">
-      <div class="replay-hero">
-        <h2 style="margin:0">⏺ Instant Replay</h2>
-        <div class="hint" style="margin-top:4px;max-width:660px">
-          L'app garde en mémoire les dernières secondes, en <b>audio</b> ou en <b>vidéo+audio</b> (façon ShadowPlay).
-          Un moment drôle&nbsp;? Fige-le d'un clic ou avec un raccourci (même en jeu).
+      <div class="replay-topbar">
+        <div class="replay-modes">
+          <button class="rmode active" data-rmode="video">🎥 Vidéo</button>
+          <button class="rmode" data-rmode="audio">🔊 Audio</button>
         </div>
         <div class="replay-grabkey">
-          <span>⌨️ Raccourci « figer les dernières secondes »&nbsp;:</span>
-          <button id="replayGrabKeyBtn" class="testbtn" title="Cliquer puis appuyer sur la touche voulue">²</button>
-          <button id="replayGrabKeyReset" class="cat-btn" title="Remettre la touche par défaut (« ² » en haut à gauche)">↺</button>
-          <span class="hint">+ <b>Ctrl+Alt+R</b> marche toujours</span>
-        </div>
-        <div class="replay-modes">
-          <button class="rmode active" data-rmode="audio">🔊 Replay audio</button>
-          <button class="rmode" data-rmode="video">🎥 Replay vidéo</button>
-        </div>
-      </div>
-
-      <!-- ===== Mode AUDIO ===== -->
-      <div id="replayModeAudio" class="replay-layout">
-        <!-- Colonne gauche : capture -->
-        <div class="replay-main">
-          <div class="replay-capture">
-            <canvas id="replayWave"></canvas>
-            <button id="replayGrab" class="replay-grab" disabled>
-              <span class="replay-grab-ico">⏺</span>
-              <span class="replay-grab-txt">Activer la capture</span>
-            </button>
-            <div class="replay-meter"><div id="replayVu"></div></div>
-          </div>
-
-          <div class="replay-controls">
-            <label class="switch big"><input type="checkbox" id="swReplay2"><span class="sl"></span></label>
-            <span id="replayState2" class="replay-status">Capture inactive</span>
-          </div>
-
-          <div class="replay-opts">
-            <label class="replay-opt">🎙 Source
-              <select id="replaySource2">
-                <option value="mic">🎤 Mon micro</option>
-                <option value="monitor">🔊 Le son de mon PC (ce que j'entends)</option>
-              </select>
-            </label>
-            <label class="replay-opt">⏱ Durée capturée
-              <span class="replay-dur-wrap">
-                <input type="range" id="replayDur2" min="2" max="30" step="1" value="5">
-                <b id="replayDurLbl2">5 s</b>
-              </span>
-            </label>
-          </div>
-
-          <div class="replay-flags">
-            <label class="row">
-              <label class="switch"><input type="checkbox" id="replayAuto"><span class="sl"></span></label>
-              ⚡ Capturer dès le lancement de l'app (rien n'est enregistré sur le disque, juste les 30 dernières secondes en mémoire)
-            </label>
-            <label class="row">
-              <label class="switch"><input type="checkbox" id="replayAutoClip"><span class="sl"></span></label>
-              🔥 Clipper automatiquement les moments forts détectés
-            </label>
-          </div>
-
-          <!-- Moments forts détectés (pics d'intensité : rires, cris…) -->
-          <div id="replayMoments" class="replay-moments" style="display:none">
-            <div class="rm-title">🔥 Moments forts détectés <span class="hint">(pics de volume : rires, cris, explosions…)</span></div>
-            <div id="replayMomentsList"></div>
-          </div>
-
-          <div id="replayHint2" class="hint" style="margin-top:10px"></div>
-
-          <!-- ===== BÊTA : reconnaissance de sons par IA (YAMNet) ===== -->
-          <div class="beta-box">
-            <div class="beta-head">
-              <span>🧪 Reconnaissance de sons <span class="beta-tag">BÊTA</span></span>
-              <label class="switch"><input type="checkbox" id="yamSwitch"><span class="sl"></span></label>
-            </div>
-            <div class="hint" style="margin-top:4px">
-              Un modèle IA (YAMNet, 521 sons) écoute la capture et distingue <b>rire, applaudissements,
-              cri, musique, parole…</b> — bien plus fin que la détection par volume.
-            </div>
-
-            <!-- État : à installer -->
-            <div id="yamInstall" style="display:none;margin-top:10px">
-              <button class="testbtn" id="yamInstallBtn">📥 Activer la reconnaissance (~15 Mo, une fois)</button>
-              <div id="yamInstallLog" class="hint" style="margin-top:6px"></div>
-            </div>
-
-            <!-- Choix des catégories à détecter -->
-            <div id="yamCats" style="display:none;margin-top:10px">
-              <div class="hint" style="margin-bottom:6px">Cliquer un moment détecté le clippe (comme les moments forts).</div>
-              <div class="yam-chips" id="yamChips"></div>
-              <label class="row" style="margin-top:8px">
-                <label class="switch"><input type="checkbox" id="yamAutoClip"><span class="sl"></span></label>
-                🎯 Clipper automatiquement les sons cochés quand ils sont reconnus
-              </label>
-              <div class="yam-live" id="yamLive"></div>
-              <div id="yamEvents" class="replay-moments" style="display:none;margin-top:10px">
-                <div class="rm-title">🧠 Sons reconnus</div>
-                <div id="yamEventsList"></div>
-              </div>
-            </div>
-          </div>
-        </div>
-
-        <!-- Colonne droite : mes enregistrements -->
-        <div class="replay-clips">
-          <div class="clips-head">
-            <span>🎞️ Mes enregistrements <span id="clipsCount" class="cat-count">0</span></span>
-            <button class="cat-btn" id="clipsRefresh" title="Rafraîchir">↻</button>
-          </div>
-          <div id="clipsList" class="clips-list"></div>
+          <span>⌨️ Figer&nbsp;:</span>
+          <button id="replayGrabKeyBtn" class="key-pill" title="Cliquer puis appuyer sur la touche voulue">²</button>
+          <button id="replayGrabKeyReset" class="cat-btn" title="Touche par défaut">↺</button>
+          <span class="hint">ou <b>Ctrl+Alt+R</b></span>
         </div>
       </div>
 
       <!-- ===== Mode VIDÉO (ShadowPlay) ===== -->
-      <div id="replayModeVideo" class="replay-layout" style="display:none">
-        <!-- Colonne gauche : capture vidéo -->
+      <div id="replayModeVideo" class="replay-layout">
         <div class="replay-main">
-          <div class="vid-preview" id="vidPreviewWrap">
-            <video id="vidPreview" muted playsinline></video>
-            <div id="vidPreviewOff" class="vid-preview-off">🎥 Aperçu de la capture (apparaît une fois activée)</div>
+          <!-- Carte capture (héros) -->
+          <div class="cap-card">
+            <div class="cap-head">
+              <div class="cap-title"><span id="vidState" class="cap-state">Capture inactive</span></div>
+              <label class="switch big"><input type="checkbox" id="swVideo"><span class="sl"></span></label>
+            </div>
+            <div class="vid-preview" id="vidPreviewWrap">
+              <video id="vidPreview" muted playsinline></video>
+              <div id="vidPreviewOff" class="vid-preview-off">🎥 L'aperçu apparaît une fois la capture activée</div>
+            </div>
+            <button id="vidGrab" class="grab-big" disabled>
+              <span class="grab-ico">🎬</span>
+              <span class="grab-txt">Active la capture d'abord</span>
+            </button>
           </div>
 
-          <button id="vidGrab" class="replay-grab" disabled>
-            <span class="replay-grab-ico">🎬</span>
-            <span class="replay-grab-txt">Active la capture d'abord</span>
-          </button>
-
-          <div class="replay-controls">
-            <label class="switch big"><input type="checkbox" id="swVideo"><span class="sl"></span></label>
-            <span id="vidState" class="replay-status">Capture inactive</span>
-          </div>
-
-          <div class="replay-opts">
+          <!-- Réglages compacts -->
+          <div class="cap-settings">
             <label class="replay-opt">🔊 Audio du clip
               <select id="vidAudio">
                 <option value="system">🔊 Son du PC seul</option>
                 <option value="mic">🎤 Mon micro seul</option>
                 <option value="both">🎧 Son du PC + micro</option>
-                <option value="none">🔇 Aucun (vidéo muette)</option>
+                <option value="none">🔇 Aucun (muet)</option>
               </select>
             </label>
             <label class="replay-opt">⏱ Durée gardée
@@ -347,31 +288,174 @@
                 <option value="native">Native (écran)</option>
               </select>
             </label>
-          </div>
-
-          <div class="replay-flags">
-            <label class="row">
+            <label class="opt-toggle">
               <label class="switch"><input type="checkbox" id="vidAuto"><span class="sl"></span></label>
-              ⚡ Démarrer la capture vidéo au lancement de l'app
+              <span>⚡ Démarrer au lancement de l'app</span>
             </label>
           </div>
 
-          <div id="vidHint" class="hint" style="margin-top:10px">
-            ⚠️ Le buffer vidéo continu consomme de la RAM et un peu de CPU (l'encodage tourne en tâche de fond).
-            Reste raisonnable au-delà d'1&nbsp;min à haute qualité.
+          <div id="vidHint" class="hint replay-note">
+            ⚠️ Le buffer vidéo continu consomme un peu de RAM/CPU (l'encodage tourne en fond).
+            Reste raisonnable au-delà d'1&nbsp;min en haute qualité.
           </div>
         </div>
 
         <!-- Colonne droite : mes clips vidéo -->
         <div class="replay-clips">
           <div class="clips-head">
-            <span>🎬 Mes clips vidéo <span id="vidCount" class="cat-count">0</span></span>
+            <span>🎬 Mes clips <span id="vidCount" class="cat-count">0</span></span>
             <span style="display:flex;gap:2px">
               <button class="cat-btn" id="vidReveal" title="Ouvrir le dossier des clips">📂</button>
               <button class="cat-btn" id="vidRefresh" title="Rafraîchir">↻</button>
             </span>
           </div>
           <div id="vidList" class="clips-list"></div>
+        </div>
+      </div>
+
+      <!-- ===== Mode AUDIO ===== -->
+      <div id="replayModeAudio" class="replay-layout" style="display:none">
+        <div class="replay-main">
+          <!-- Carte capture (héros) -->
+          <div class="cap-card">
+            <div class="cap-head">
+              <div class="cap-title"><span id="replayState2" class="cap-state">Capture inactive</span></div>
+              <label class="switch big"><input type="checkbox" id="swReplay2"><span class="sl"></span></label>
+            </div>
+            <div class="replay-capture">
+              <canvas id="replayWave"></canvas>
+              <div class="replay-meter"><div id="replayVu"></div></div>
+            </div>
+            <button id="replayGrab" class="grab-big" disabled>
+              <span class="grab-ico">⏺</span>
+              <span class="grab-txt">Activer la capture</span>
+            </button>
+          </div>
+
+          <!-- Réglages compacts -->
+          <div class="cap-settings">
+            <label class="replay-opt">🎙 Source
+              <select id="replaySource2">
+                <option value="mic">🎤 Mon micro</option>
+                <option value="monitor">🔊 Le son de mon PC</option>
+              </select>
+            </label>
+            <label class="replay-opt">⏱ Durée capturée
+              <span class="replay-dur-wrap">
+                <input type="range" id="replayDur2" min="2" max="30" step="1" value="5">
+                <b id="replayDurLbl2">5 s</b>
+              </span>
+            </label>
+            <label class="opt-toggle">
+              <label class="switch"><input type="checkbox" id="replayAuto"><span class="sl"></span></label>
+              <span>⚡ Démarrer au lancement de l'app</span>
+            </label>
+            <label class="opt-toggle">
+              <label class="switch"><input type="checkbox" id="replayAutoClip"><span class="sl"></span></label>
+              <span>🔥 Clipper auto les moments forts</span>
+            </label>
+          </div>
+
+          <div id="replayHint2" class="hint replay-note"></div>
+
+          <!-- Moments forts détectés -->
+          <div id="replayMoments" class="replay-moments" style="display:none">
+            <div class="rm-title">🔥 Moments forts détectés <span class="hint">(pics de volume : rires, cris…)</span></div>
+            <div id="replayMomentsList"></div>
+          </div>
+
+          <!-- ===== Fonctions avancées : cartes pliables ===== -->
+          <!-- Live looper -->
+          <details class="adv-card">
+            <summary>
+              <span class="adv-ico">🔁</span>
+              <span class="adv-name">Live looper <span class="hint">capture un mot, boucle-le en direct</span></span>
+              <label class="switch adv-switch"><input type="checkbox" id="swLooper"><span class="sl"></span></label>
+            </summary>
+            <div class="adv-body">
+              <div class="hint" style="margin-bottom:10px">
+                Dis un mot, appuie sur la touche de capture : les dernières secondes de <b>ton micro</b>
+                deviennent un sample jouable en boucle. Marche même en jeu.
+              </div>
+              <div id="looperOpts" style="display:none">
+                <div class="cap-settings">
+                  <label class="replay-opt">⏱ Durée
+                    <span class="replay-dur-wrap">
+                      <input type="range" id="looperDur" min="0.5" max="5" step="0.5" value="2">
+                      <b id="looperDurLbl">2 s</b>
+                    </span>
+                  </label>
+                  <label class="replay-opt">🎙 Source
+                    <select id="looperSource">
+                      <option value="mic">🎤 Mon micro seul</option>
+                      <option value="both">🎧 Micro + son du PC</option>
+                    </select>
+                  </label>
+                  <label class="replay-opt">🔊 Sortie boucle
+                    <select id="looperOutput">
+                      <option value="both">📢 Discord + casque</option>
+                      <option value="discord">📡 Discord seul</option>
+                      <option value="monitor">🎧 Casque seul (test)</option>
+                    </select>
+                  </label>
+                  <label class="replay-opt">🔉 Volume boucle
+                    <span class="replay-dur-wrap">
+                      <input type="range" id="looperVol" min="0" max="100" step="5" value="100">
+                      <b id="looperVolLbl">100%</b>
+                    </span>
+                  </label>
+                </div>
+                <div class="looper-keys">
+                  <div class="lk-row"><span class="lk-label">🎙️ Capturer</span><button class="lk-btn" id="lkCapture" data-lk="captureKey">F1</button></div>
+                  <div class="lk-row"><span class="lk-label">🔁 Boucler (marche/arrêt)</span><button class="lk-btn" id="lkToggle" data-lk="toggleKey">F2</button></div>
+                  <div class="lk-row"><span class="lk-label">🔂 Relancer du début</span><button class="lk-btn" id="lkRetrigger" data-lk="retriggerKey">F3</button></div>
+                  <div class="hint" style="margin-top:2px">Clique un bouton puis appuie sur la touche voulue (Échap pour annuler).</div>
+                </div>
+                <div id="looperStatus" class="hint" style="margin-top:10px;min-height:18px"></div>
+              </div>
+            </div>
+          </details>
+
+          <!-- Reconnaissance de sons (YAMNet) -->
+          <details class="adv-card">
+            <summary>
+              <span class="adv-ico">🧪</span>
+              <span class="adv-name">Reconnaissance de sons <span class="beta-tag">BÊTA</span></span>
+              <label class="switch adv-switch"><input type="checkbox" id="yamSwitch"><span class="sl"></span></label>
+            </summary>
+            <div class="adv-body">
+              <div class="hint" style="margin-bottom:10px">
+                Un modèle IA (YAMNet, 521 sons) écoute la capture et distingue <b>rire, applaudissements,
+                cri, musique…</b> — plus fin que la détection par volume.
+              </div>
+              <div id="yamInstall" style="display:none">
+                <button class="testbtn" id="yamInstallBtn">📥 Activer la reconnaissance (~15 Mo, une fois)</button>
+                <div id="yamInstallLog" class="hint" style="margin-top:6px"></div>
+              </div>
+              <div id="yamCats" style="display:none">
+                <div class="hint" style="margin-bottom:6px">Cliquer un moment détecté le clippe (comme les moments forts).</div>
+                <div class="yam-chips" id="yamChips"></div>
+                <label class="opt-toggle" style="margin-top:8px">
+                  <label class="switch"><input type="checkbox" id="yamAutoClip"><span class="sl"></span></label>
+                  <span>🎯 Clipper auto les sons cochés</span>
+                </label>
+                <div class="yam-live" id="yamLive"></div>
+                <div id="yamEvents" class="replay-moments" style="display:none;margin-top:10px">
+                  <div class="rm-title">🧠 Sons reconnus</div>
+                  <div id="yamEventsList"></div>
+                </div>
+              </div>
+            </div>
+          </details>
+        </div>
+
+        <!-- Colonne droite : mes enregistrements -->
+        <div class="replay-clips">
+          <div class="clips-head">
+            <span>🎞️ Mes enregistrements <span id="clipsCount" class="cat-count">0</span></span>
+            <button class="cat-btn" id="clipsRefresh" title="Rafraîchir">↻</button>
+          </div>
+          <div id="clipsList" class="clips-list"></div>
         </div>
       </div>
     </div>
@@ -414,7 +498,10 @@
               <select id="ttsVoice"></select>
             </label>
             <label class="replay-opt">🧠 Puis convertir en…
-              <select id="ttsAiVoice"><option value="">— personne (voix TTS pure) —</option></select>
+              <span class="replay-dur-wrap">
+                <select id="ttsAiVoice"><option value="">— personne (voix TTS pure) —</option></select>
+                <button class="testbtn" id="ttsAiLaunch" style="display:none" title="Lancer le moteur de voix IA">▶️ Moteur</button>
+              </span>
             </label>
             <label class="replay-opt">⏩ Vitesse
               <span class="replay-dur-wrap">
@@ -525,6 +612,17 @@
   <aside id="settings">
     <h2>⚙️ Réglages <button class="cat-btn" id="settingsClose" title="Fermer (Échap)">✕</button></h2>
 
+    <!-- Profils : bibliothèques de sons séparées -->
+    <div class="card">
+      <h3><span>👤 Profils</span></h3>
+      <div class="hint">Chaque profil a ses propres sons, catégories, favoris et réglages.
+        Idéal pour séparer « déconne Discord » et « ambiances JDR ».</div>
+      <div id="profilesList" class="profiles-list"></div>
+      <div style="display:flex;gap:8px;margin-top:8px;flex-wrap:wrap">
+        <button class="testbtn" id="profileAdd">➕ Nouveau profil</button>
+      </div>
+    </div>
+
     <div class="card">
       <h3>
         <span>📡 Sortie vers Discord <span id="cableBadge" class="badge ko">non détecté</span></span>
@@ -538,12 +636,14 @@
 
     <div class="card">
       <h3>
-        <span>🎧 Retour local (t'entendre)</span>
+        <span>🔊 Écouter les sons dans mon casque</span>
         <label class="switch"><input type="checkbox" id="swMonitor" checked><span class="sl"></span></label>
       </h3>
       <select id="selMonitor"></select>
+      <button class="testbtn" id="testMonitor">🎧 Tester (bip)</button>
       <div class="vol">🔊 <input type="range" id="volMonitor" min="0" max="100" value="50"><span id="volMonitorLbl">50%</span></div>
-      <div class="hint">Joue aussi le son dans ton casque pour que tu l'entendes.</div>
+      <div class="hint">Rejoue les sons du soundboard dans <b>ce casque</b> pour que tu les entendes.
+        C'est aussi le casque utilisé par « M'entendre parler » dans le modulateur de voix.</div>
     </div>
 
     <div class="card">
@@ -560,13 +660,15 @@
         <label class="row" style="margin-top:10px">
           <label class="switch"><input type="checkbox" id="swDenoise"><span class="sl"></span></label>
           <span><span class="dot" id="dotDenoise" style="background:var(--text-dim)"></span>
-          🛡️ Filtre anti-bruit <b>(façon Krisp)</b></span>
+          🛡️ Réduction de bruit IA <b>(RNNoise, technique de Krisp)</b></span>
         </label>
-        <div class="hint">Coupe respiration, souffle, clavier et bruit de fond de <b>ton micro</b>, sans jamais
-        toucher aux sons du soundboard. Remplace le Krisp de Discord (à laisser désactivé côté Discord).</div>
+        <div class="hint">Un réseau de neurones reconnaît ta <b>voix</b> et supprime le reste (clavier, chien,
+        porte, ventilo…), même les bruits forts. Ne touche jamais aux sons du soundboard.
+        Laisse le Krisp de Discord <b>désactivé</b>. Accès rapide : chip 🛡️ en bas.</div>
         <div id="denoiseOpts" style="display:none">
-          <div class="vol">💪 <input type="range" id="denoiseStrength" min="20" max="100" value="60"><span id="denoiseStrengthLbl">60%</span></div>
-          <div class="hint" style="opacity:.7">Plus fort = coupe plus de bruit, mais peut rogner les débuts de mots si tu parles doucement.</div>
+          <div class="vol">✂️ <input type="range" id="denoiseGate" min="0" max="100" value="70"><span id="denoiseGateLbl">70%</span></div>
+          <div class="hint" style="opacity:.7">Agressivité : coupe le micro entre tes phrases (clavier, bruits de bouche, souffle).
+          Plus haut = plus silencieux mais peut rogner les tout débuts de mots. 0 = laisse le micro toujours ouvert.</div>
         </div>
       </div>
     </div>
@@ -660,6 +762,8 @@
 </div>
 
 <footer>
+  <button id="profileSwitch" class="profile-chip" title="Changer de profil">👤 <b id="profileName">Défaut</b> ▾</button>
+  <button id="denoiseChip" class="profile-chip" title="Réduction de bruit du micro (IA)">🛡️ <b id="denoiseChipLbl">Anti-bruit : off</b></button>
   <span><span class="dot" id="dotApp" style="background:var(--green)"></span><span id="statApp">Application prête</span></span>
   <span><span class="dot" id="dotCable" style="background:var(--red)"></span><span id="statCable">Câble virtuel : non détecté</span></span>
   <span><span class="dot" id="dotMic" style="background:var(--text-dim)"></span><span id="statMic">Micro → Discord : inactif</span></span>
@@ -669,6 +773,7 @@
 
 <div id="dropOverlay">📥 Dépose tes sons ici !</div>
 <div id="ctx"></div>
+<div id="profileMenu"></div>
 
 <div id="keyCapture">
   <div>⌨️ Appuie sur une combinaison pour <span id="keyCaptureName"></span></div>

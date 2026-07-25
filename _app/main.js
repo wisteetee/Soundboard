@@ -3,6 +3,15 @@
  * Fenêtre, tray, raccourcis globaux, accès aux fichiers sons.
  */
 const { app, BrowserWindow, Tray, Menu, ipcMain, dialog, globalShortcut, shell, protocol, net, nativeImage, session, desktopCapturer } = require('electron');
+
+// Capture d'écran : Chromium utilise par défaut Windows Graphics Capture (WGC),
+// qui émet des « ProcessFrame failed » (E_FAIL) en boucle dès que la fenêtre
+// capturée est occluse/minimisée. On désactive WGC pour revenir au capteur legacy
+// (DXGI/GDI) qui ne produit pas ces erreurs. -> plus de spam, capture stable.
+app.commandLine.appendSwitch('disable-features', 'AllowWgcScreenCapturer,AllowWgcWindowCapturer');
+// Filet de sécurité : n'afficher que les erreurs fatales de Chromium.
+app.commandLine.appendSwitch('log-level', '3');
+
 const path = require('path');
 const fs = require('fs');
 const http = require('http');
@@ -445,12 +454,30 @@ function vcclientResponding() {
 }
 
 // Lance VCClient (serveur local). Résout quand le port répond.
+// Tue tout main.exe (VCClient) orphelin d'un lancement précédent : sinon un
+// process zombie qui tient le port 18888 empêche le nouveau de répondre (cause
+// des « n'a pas répondu à temps » en boucle).
+async function killVcclientZombies() {
+  try {
+    const exe = vcclientExe();
+    // ne tue QUE les main.exe dont le chemin est celui de NOTRE VCClient
+    await runPowerShell(
+      `Get-CimInstance Win32_Process -Filter "Name='main.exe'" | ` +
+      `Where-Object { $_.ExecutablePath -eq '${exe.replace(/\\/g, '\\\\')}' } | ` +
+      `ForEach-Object { Invoke-CimMethod -InputObject $_ -MethodName Terminate | Out-Null }`);
+  } catch {}
+}
+
 async function launchVcclient(onStep) {
   const step = (m) => { try { onStep && onStep(m); } catch {} };
   if (!vcclientReady()) return { ok: false, error: 'not-installed' };
   if (vcclientProc && !vcclientProc.killed) return { ok: true, already: true, url: `http://127.0.0.1:${VCCLIENT_PORT}/` };
-  // déjà lancé par ailleurs (process résiduel qui tient le port) -> on le réutilise
+  // déjà lancé par ailleurs et RÉPOND -> on le réutilise
   if (await vcclientResponding()) { step('Moteur déjà actif — réutilisation.'); return { ok: true, already: true, url: `http://127.0.0.1:${VCCLIENT_PORT}/` }; }
+  // sinon : tue les zombies (main.exe bloqués) avant de relancer proprement
+  step('Nettoyage des instances précédentes…');
+  await killVcclientZombies();
+  await new Promise(r => setTimeout(r, 1500));
   try {
     // Commande réelle (cf. start_http.bat de la build 2.0.78) :
     //   main.exe cui --https false --no_cui True --port <PORT>
@@ -464,21 +491,18 @@ async function launchVcclient(onStep) {
   } catch (e) {
     return { ok: false, error: String(e.message || e) };
   }
-  // Au TOUT premier lancement, VCClient télécharge ses modèles auxiliaires
-  // (hubert, rmvpe, contentvec…, plusieurs centaines de Mo) avant de répondre.
-  // On attend donc longtemps (jusqu'à ~8 min) tant que le process vit.
+  step('Démarrage du moteur (chargement des modèles en mémoire, ~20-40 s)…');
   const url = `http://127.0.0.1:${VCCLIENT_PORT}/`;
-  let warned = false;
-  for (let i = 0; i < 480; i++) {           // 480 × 1 s = 8 min max
+  for (let i = 0; i < 480; i++) {           // 480 × 1 s = 8 min max (1er lancement peut télécharger)
     await new Promise(r => setTimeout(r, 1000));
     if (!vcclientProc) return { ok: false, error: 'VCClient s\'est arrêté au démarrage.' };
-    if (i === 12 && !warned) { warned = true; step('Premier lancement : téléchargement des modèles IA (quelques minutes)…'); }
+    if (i === 45) step('Chargement un peu long — les modèles se mettent en mémoire, patiente encore…');
     const up = await new Promise((resolve) => {
-      const req = http.get(url, (res) => { res.destroy(); resolve(res.statusCode === 200); });
+      const req = http.get(url + 'api/hello', (res) => { res.destroy(); resolve(res.statusCode === 200); });
       req.on('error', () => resolve(false));
       req.setTimeout(1500, () => { req.destroy(); resolve(false); });
     });
-    if (up) return { ok: true, url };
+    if (up) { step('✅ Moteur prêt !'); return { ok: true, url }; }
   }
   return { ok: false, error: 'VCClient n\'a pas répondu à temps (réessaie).', url };
 }
@@ -486,6 +510,11 @@ async function launchVcclient(onStep) {
 function stopVcclient() {
   if (vcclientProc && !vcclientProc.killed) {
     try { vcclientProc.kill(); } catch {}
+    // main.exe peut laisser un sous-process ; on force via l'arbre de process
+    try {
+      const pid = vcclientProc.pid;
+      if (pid) spawn('taskkill', ['/F', '/T', '/PID', String(pid)], { windowsHide: true });
+    } catch {}
     vcclientProc = null;
   }
 }
@@ -535,13 +564,44 @@ let config = {};
 function configPath() { return path.join(app.getPath('userData'), 'config.json'); }
 function loadConfig() {
   try { config = JSON.parse(fs.readFileSync(configPath(), 'utf8')); } catch { config = {}; }
+  ensureProfiles();
 }
 function saveConfig() {
   try { fs.writeFileSync(configPath(), JSON.stringify(config, null, 2)); } catch {}
 }
 
+/* ---------- Profils (bibliothèques séparées) ----------
+   config.profiles = [{ id, name, dir }] ; config.activeProfile = id.
+   Chaque profil a son propre dossier de sons + son state.json.
+   Migration transparente : une config d'avant les profils (soundsDir simple)
+   devient automatiquement un profil « Défaut » pointant sur ce dossier. */
+const ROOT_LIBRARY = () => config.soundsDir || path.join(app.getPath('music'), 'SOUNDBOARD DISCORD');
+
+function ensureProfiles() {
+  if (!Array.isArray(config.profiles) || !config.profiles.length) {
+    // 1er lancement avec profils : la bibliothèque existante devient « Défaut ».
+    config.profiles = [{ id: 'defaut', name: 'Défaut', dir: ROOT_LIBRARY() }];
+    config.activeProfile = 'defaut';
+    saveConfig();
+  }
+  if (!config.profiles.find((p) => p.id === config.activeProfile)) {
+    config.activeProfile = config.profiles[0].id;
+  }
+}
+
+function activeProfile() {
+  return config.profiles.find((p) => p.id === config.activeProfile) || config.profiles[0];
+}
+
+function profilesDir() {
+  // dossier racine des profils créés par l'app (le profil « Défaut » peut être ailleurs)
+  const d = path.join(ROOT_LIBRARY(), '_profils');
+  try { fs.mkdirSync(d, { recursive: true }); } catch {}
+  return d;
+}
+
 function soundsDir() {
-  const d = config.soundsDir || path.join(app.getPath('music'), 'SOUNDBOARD DISCORD');
+  const d = activeProfile().dir;
   try { fs.mkdirSync(d, { recursive: true }); } catch {}
   return d;
 }
@@ -757,10 +817,11 @@ function watchSounds() {
 }
 
 /* ---------- Raccourcis globaux ---------- */
-function registerHotkeys(map, enabled, replayGrab) {
+function registerHotkeys(map, enabled, replayGrab, looper) {
   globalShortcut.unregisterAll();
   const registered = [], failed = [];
   const sendReplaySave = () => { if (win && !win.isDestroyed()) win.webContents.send('replay-save'); };
+  const sendLooper = (action) => () => { if (win && !win.isDestroyed()) win.webContents.send('looper', action); };
   if (enabled) {
     for (const acc of Object.keys(map || {})) {
       try {
@@ -790,6 +851,16 @@ function registerHotkeys(map, enabled, replayGrab) {
     try {
       globalShortcut.register(OVERLAY_ACCELERATOR, () => toggleOverlay());
     } catch {}
+    // Live looper : 3 raccourcis globaux configurables (capture / boucle / retrigger)
+    if (looper) {
+      for (const [action, acc] of Object.entries(looper)) {
+        if (!acc) continue;
+        try {
+          if (globalShortcut.register(acc, sendLooper(action))) registered.push(acc);
+          else failed.push(acc);
+        } catch { failed.push(acc); }
+      }
+    }
   }
   return { registered, failed };
 }
@@ -1045,6 +1116,124 @@ function recordingsDir() {
   return d;
 }
 
+/* ---------- État de l'app (sb-state) : persistance FICHIER ---------- */
+// Le localStorage (leveldb Chromium) peut perdre des écritures lors d'un kill
+// brutal de l'app -> les associations d'icônes disparaissaient par intermittence.
+// L'état vit désormais dans un JSON du userData, écrit de façon ATOMIQUE
+// (fichier temporaire puis rename), avec une copie .bak de secours.
+// Chaque profil a son state.json DANS son dossier de sons. Ainsi il voyage avec
+// la bibliothèque (Export/Import) et reste isolé des autres profils.
+function statePath() { return path.join(soundsDir(), 'state.json'); }
+// Ancien emplacement global (avant les profils) : sert de source de migration.
+function legacyStatePath() { return path.join(app.getPath('userData'), 'state.json'); }
+
+ipcMain.handle('state-load', () => {
+  // migration douce : si le profil n'a pas encore de state.json mais qu'un ancien
+  // state global existe (profil Défaut), on le récupère une fois.
+  try {
+    if (!fs.existsSync(statePath()) && activeProfile().id === 'defaut' && fs.existsSync(legacyStatePath())) {
+      fs.copyFileSync(legacyStatePath(), statePath());
+    }
+  } catch {}
+  for (const p of [statePath(), statePath() + '.bak']) {
+    try {
+      const txt = fs.readFileSync(p, 'utf8');
+      const obj = JSON.parse(txt);
+      if (obj && typeof obj === 'object') {
+        return { ok: true, state: obj, from: path.basename(p) };
+      }
+    } catch {}
+  }
+  return { ok: false };   // pas encore migré : le renderer lira le localStorage
+});
+
+ipcMain.handle('state-save', (_e, stateObj) => {
+  try {
+    if (!stateObj || typeof stateObj !== 'object') return { error: 'état invalide' };
+    const json = JSON.stringify(stateObj);
+    if (!json || json.length < 2) return { error: 'état vide' };
+    const p = statePath();
+
+    // GARDE-FOU ANTI-CORRUPTION : ne JAMAIS remplacer un fichier qui possède des
+    // icônes par un état qui n'en a aucune. C'était la cause de la perte : un état
+    // vide (localStorage effacé par un kill) écrasait le bon fichier state.json.
+    if (Object.keys(stateObj.icons || {}).length === 0 && fs.existsSync(p)) {
+      try {
+        const old = JSON.parse(fs.readFileSync(p, 'utf8'));
+        if (Object.keys(old.icons || {}).length > 0) {
+          return { ok: false, skipped: true };   // on protège le fichier existant
+        }
+      } catch {}
+    }
+
+    // garde l'ancienne version en .bak avant de remplacer
+    try { if (fs.existsSync(p)) fs.copyFileSync(p, p + '.bak'); } catch {}
+    const tmp = p + '.tmp';
+    fs.writeFileSync(tmp, json);
+    fs.renameSync(tmp, p);   // rename = atomique : jamais de fichier à moitié écrit
+    return { ok: true };
+  } catch (e) { return { error: String(e.message || e) }; }
+});
+
+/* ---------- IPC Profils ---------- */
+ipcMain.handle('profiles-list', () => ({
+  profiles: config.profiles.map((p) => ({ id: p.id, name: p.name, dir: p.dir })),
+  active: config.activeProfile,
+}));
+
+ipcMain.handle('profile-create', (_e, name) => {
+  try {
+    const clean = sanitizeName(String(name || '').trim()).slice(0, 40) || 'Profil';
+    const id = 'p' + Date.now().toString(36);
+    // dossier dédié sous _profils/<nom> (unique)
+    let dir = path.join(profilesDir(), clean);
+    let n = 2;
+    while (fs.existsSync(dir)) dir = path.join(profilesDir(), clean + ' ' + n++);
+    fs.mkdirSync(dir, { recursive: true });
+    config.profiles.push({ id, name: clean, dir });
+    saveConfig();
+    return { ok: true, id, name: clean, dir };
+  } catch (e) { return { error: String(e.message || e) }; }
+});
+
+ipcMain.handle('profile-rename', (_e, id, name) => {
+  const p = config.profiles.find((x) => x.id === id);
+  if (!p) return { error: 'profil introuvable' };
+  p.name = sanitizeName(String(name || '').trim()).slice(0, 40) || p.name;
+  saveConfig();
+  return { ok: true, name: p.name };
+});
+
+ipcMain.handle('profile-delete', (_e, id) => {
+  if (config.profiles.length <= 1) return { error: 'impossible de supprimer le dernier profil' };
+  const idx = config.profiles.findIndex((x) => x.id === id);
+  if (idx < 0) return { error: 'profil introuvable' };
+  const p = config.profiles[idx];
+  // ne supprime PAS les fichiers du disque (sécurité) — juste l'entrée du profil.
+  // On déplace son dossier dans une corbeille de profils pour rester réversible.
+  try {
+    if (p.dir.startsWith(profilesDir())) {
+      const trash = path.join(profilesDir(), '_supprimes');
+      fs.mkdirSync(trash, { recursive: true });
+      const dest = path.join(trash, path.basename(p.dir) + '-' + Date.now());
+      try { fs.renameSync(p.dir, dest); } catch {}
+    }
+  } catch {}
+  config.profiles.splice(idx, 1);
+  if (config.activeProfile === id) config.activeProfile = config.profiles[0].id;
+  saveConfig();
+  return { ok: true, active: config.activeProfile };
+});
+
+ipcMain.handle('profile-switch', (_e, id) => {
+  if (!config.profiles.find((x) => x.id === id)) return { error: 'profil introuvable' };
+  config.activeProfile = id;
+  saveConfig();
+  // recharge la fenêtre : le renderer relira sons + state du nouveau profil
+  if (win && !win.isDestroyed()) win.webContents.reload();
+  return { ok: true };
+});
+
 ipcMain.handle('save-clip', (_e, wavBuffer, name) => {
   try {
     // nom horodaté par défaut (ex. « Replay 14h32m07 »), rangé dans « Enregistrements »
@@ -1059,14 +1248,51 @@ ipcMain.handle('save-clip', (_e, wavBuffer, name) => {
   } catch (e) { return { error: String(e.message || e) }; }
 });
 
-// Enregistre un clip VIDÉO (replay ShadowPlay) dans « Clips vidéo » (userData).
-// Les .webm ne sont pas des sons -> catégorie à part, hors de la bibliothèque de sons.
+// Clips VIDÉO (replay ShadowPlay) rangés dans « _Clips vidéo » à la racine de la
+// bibliothèque : dossier VISIBLE à côté des sons (facile à retrouver), mais le
+// préfixe « _ » l'exclut du scan des catégories de sons.
 function videoClipsDir() {
-  const d = path.join(app.getPath('userData'), 'clips-video');
+  const d = path.join(ROOT_LIBRARY(), '_Clips vidéo');
   try { fs.mkdirSync(d, { recursive: true }); } catch {}
+  // migration douce : rapatrie les clips de l'ancien emplacement userData
+  try {
+    const legacy = path.join(app.getPath('userData'), 'clips-video');
+    if (fs.existsSync(legacy) && legacy !== d) {
+      for (const f of fs.readdirSync(legacy)) {
+        if (!f.toLowerCase().endsWith('.webm')) continue;
+        const dest = path.join(d, f);
+        if (!fs.existsSync(dest)) { try { fs.renameSync(path.join(legacy, f), dest); } catch {} }
+      }
+      // supprime l'ancien dossier s'il est vide
+      try { if (!fs.readdirSync(legacy).length) fs.rmdirSync(legacy); } catch {}
+    }
+  } catch {}
   return d;
 }
-ipcMain.handle('save-video-clip', (_e, buffer, name) => {
+// Remux un WebM brut (MediaRecorder, sans durée -> seek impossible dans VLC) en
+// un WebM complet AVEC durée + index. « -c copy » = aucune ré-encodage, instantané.
+function remuxWebm(srcPath) {
+  return new Promise((resolve) => {
+    if (!ffmpegReady()) return resolve(false);
+    const tmp = srcPath + '.fixed.webm';
+    const args = ['-y', '-fflags', '+genpts', '-i', srcPath, '-c', 'copy', tmp];
+    const p = spawn(ffmpegPath(), args, { windowsHide: true });
+    p.on('error', () => resolve(false));
+    p.on('exit', (code) => {
+      try {
+        if (code === 0 && fs.existsSync(tmp) && fs.statSync(tmp).size > 1000) {
+          fs.rmSync(srcPath, { force: true });
+          fs.renameSync(tmp, srcPath);
+          return resolve(true);
+        }
+      } catch {}
+      try { fs.rmSync(tmp, { force: true }); } catch {}
+      resolve(false);
+    });
+  });
+}
+
+ipcMain.handle('save-video-clip', async (_e, buffer, name) => {
   try {
     const t = new Date();
     const pad = (n) => String(n).padStart(2, '0');
@@ -1074,8 +1300,25 @@ ipcMain.handle('save-video-clip', (_e, buffer, name) => {
     const base = sanitizeName(name || dflt) || 'clip';
     const dest = uniquePath(videoClipsDir(), base, '.webm');
     fs.writeFileSync(dest, Buffer.from(buffer));
+    // écrit la durée + index de seek (sinon VLC ne peut pas naviguer dans la vidéo)
+    await remuxWebm(dest);
     return { ok: true, file: path.basename(dest), path: dest };
   } catch (e) { return { error: String(e.message || e) }; }
+});
+
+// Répare les clips vidéo existants (ajoute la durée manquante pour le seek)
+ipcMain.handle('repair-video-clips', async () => {
+  if (!ffmpegReady()) return { error: 'ffmpeg absent' };
+  const dir = videoClipsDir();
+  let fixed = 0, total = 0;
+  try {
+    for (const f of fs.readdirSync(dir)) {
+      if (!f.toLowerCase().endsWith('.webm')) continue;
+      total++;
+      if (await remuxWebm(path.join(dir, f))) fixed++;
+    }
+  } catch (e) { return { error: String(e.message || e) }; }
+  return { ok: true, fixed, total };
 });
 ipcMain.handle('list-video-clips', () => {
   try {
@@ -1088,8 +1331,10 @@ ipcMain.handle('list-video-clips', () => {
 });
 ipcMain.handle('delete-video-clip', (_e, file) => {
   try {
-    const full = path.join(videoClipsDir(), path.basename(file));
-    if (full.startsWith(videoClipsDir()) && fs.existsSync(full)) fs.rmSync(full, { force: true });
+    const dir = videoClipsDir();
+    const full = path.join(dir, path.basename(file));
+    // double garde : basename neutralise déjà toute traversal, + confinement au dossier
+    if (full.startsWith(dir + path.sep) && fs.existsSync(full)) fs.rmSync(full, { force: true });
     return { ok: true };
   } catch (e) { return { error: String(e.message || e) }; }
 });
@@ -1299,6 +1544,7 @@ ipcMain.handle('get-info', () => ({
   stopAccelerator: STOP_ACCELERATOR,
   iaInstalled: iaInstalled(),
   iaModelsDir: iaModelsDir(),
+  userData: app.getPath('userData'),   // dossier de données (state.json, config, caches)
 }));
 
 /* ---------- IPC Câble audio virtuel ---------- */
@@ -1518,7 +1764,7 @@ ipcMain.handle('choose-sounds-dir', async () => {
 
 ipcMain.handle('open-sounds-folder', () => shell.openPath(soundsDir()));
 
-ipcMain.handle('set-global-hotkeys', (_e, map, enabled, replayGrab) => registerHotkeys(map, enabled, replayGrab));
+ipcMain.handle('set-global-hotkeys', (_e, map, enabled, replayGrab, looper) => registerHotkeys(map, enabled, replayGrab, looper));
 
 ipcMain.handle('set-open-at-login', (_e, v) => {
   app.setLoginItemSettings({ openAtLogin: !!v });
@@ -1542,10 +1788,19 @@ app.whenReady().then(() => {
   });
 
   // Capture du son système (WASAPI loopback) pour l'instant replay « ce que j'entends »,
-  // sans avoir besoin du Mixage stéréo. getDisplayMedia({audio:'loopback'}) côté renderer
-  // passe par ce handler ; on renvoie une source écran mais on ne garde que l'audio.
+  // sans avoir besoin du Mixage stéréo. getDisplayMedia() côté renderer passe par ce
+  // handler. IMPORTANT : ne fournir une source ÉCRAN (video) QUE si la requête veut
+  // vraiment de la vidéo (replay VIDÉO). Pour les captures AUDIO seules (replay/looper
+  // son), fournir video déclenche Windows Graphics Capture -> « ProcessFrame failed »
+  // en boucle. On regarde donc request.videoRequested pour décider.
   try {
     session.defaultSession.setDisplayMediaRequestHandler((request, callback) => {
+      const wantsVideo = request && request.videoRequested !== false;
+      if (!wantsVideo) {
+        // audio uniquement : pas de capture d'écran
+        callback({ audio: 'loopback' });
+        return;
+      }
       desktopCapturer.getSources({ types: ['screen'] }).then((sources) => {
         callback({ video: sources[0], audio: 'loopback' });
       }).catch(() => callback({}));

@@ -4,13 +4,15 @@
 const DEFAULTS = {
   discord: { enabled: true, deviceId: '', volume: 1 },
   monitor: { enabled: true, deviceId: 'default', volume: 0.5 },
-  mic: { enabled: false, deviceId: 'default', gain: 1, denoise: false, denoiseStrength: 0.6 },
+  mic: { enabled: false, deviceId: 'default', gain: 1, denoise: false, denoiseStrength: 1, denoiseGate: 0.7 },
   cut: false,
   globalHotkeys: true,
   hotkeys: {},   // { "accélérateur": "fichier" }  ex: "Ctrl+Alt+1"
   favs: [],      // [fichier]
   icons: {},     // { "fichier": { emoji?: "😀", color?: 180 (teinte), image?: "nom.png" } }
-  voice: { preset: 'none', monitor: false, monitorVol: 0.7 },  // preset + retour casque de la voix
+  voice: { preset: 'none', monitor: false, monitorVol: 0.7,
+           xy: { pitch: 0, timbre: 0 },   // dernière position du pad XY
+           custom: [] },                  // voix personnalisées [{id,name,emoji,pitch,effects,xy,hotkey}]
   ia: { model: null, pitch: 0, indexRate: 0 },  // voix IA (RVC)
   volumes: {},   // { "fichier": 0..1 } volume individuel (molette sur la tuile)
   plays: {},     // { "fichier": nombre de lectures }
@@ -21,8 +23,19 @@ const DEFAULTS = {
   onboard: { dismissed: false, discordDone: false },  // checklist premier lancement
   replay: { source: 'mic', seconds: 5, auto: false, autoClip: false,
             yamCats: ['laugh', 'applause', 'shout'], yamAutoClip: false,
-            mode: 'audio',   // onglet interne : audio | video
+            mode: 'video',   // onglet interne : vidéo mis en avant (audio en second)
             grabHotkey: '`', // raccourci global « figer les X dernières secondes » — touche physique en haut à gauche (« ² » sur AZERTY)
+            // Live looper : capture un court échantillon du micro et le joue en boucle
+            looper: {
+              enabled: false,
+              seconds: 2,          // durée capturée (curseur 0,5–5 s)
+              source: 'mic',       // 'mic' | 'both' (micro + son du PC)
+              output: 'both',      // 'both' (Discord+casque) | 'discord' | 'monitor'
+              volume: 1,
+              captureKey: 'F1',    // capturer les X dernières secondes
+              toggleKey: 'F2',     // boucle marche/arrêt
+              retriggerKey: 'F3',  // relance la boucle depuis le début (façon sampler)
+            },
             // replay vidéo (ShadowPlay)
             video: { audio: 'system', seconds: 30, quality: '1080', auto: false } },
   theme: 'discord', // thème de couleur (voir THEMES)
@@ -33,6 +46,12 @@ let state = loadState();
 let sounds = [];
 let folders = [];            // catégories (sous-dossiers), y compris vides
 let draggingSound = null;    // fichier en cours de glisser-déposer interne
+// Ordre FIGÉ du tri « plus joués ». On ne recalcule le classement qu'à un
+// rechargement explicite (changement de tri, F5, changement de dossier) — pas à
+// chaque lecture — sinon le son qu'on vient de cliquer remonterait sous nos yeux.
+let playsOrder = null;       // Map<file, rang> figée ; null = à reconstruire
+let topPlayedSnapshot = null; // fichiers de « 🔥 Les plus joués » figés au même titre
+let lastOutDevices = [];     // dernière liste de sorties (pour le test de retour casque)
 let devices = { out: [], in: [] };
 let active = new Map();      // Audio -> file
 const durations = new Map(); // file -> secondes
@@ -57,7 +76,54 @@ function loadState() {
   try { return deepMerge(defs, JSON.parse(localStorage.getItem('sb-state') || '{}')); }
   catch { return defs; }
 }
-function saveState() { localStorage.setItem('sb-state', JSON.stringify(state)); }
+// L'état est persisté dans un FICHIER (userData/state.json, écriture atomique) :
+// le localStorage Chromium perdait des écritures lors d'un kill brutal de l'app,
+// ce qui faisait disparaître les icônes par intermittence. Le localStorage reste
+// écrit en miroir (filet + compat), mais le fichier est la source de vérité.
+function saveState() {
+  const json = JSON.stringify(state);
+  try { localStorage.setItem('sb-state', json); } catch {}
+  try { window.sb.stateSave(state); } catch {}
+}
+let stateHydrated = false;   // vrai une fois l'état chargé depuis le disque
+
+// Au démarrage : le FICHIER state.json est la source de vérité. On fusionne avec
+// le localStorage en gardant, champ par champ, la version la plus « riche » —
+// pour ne JAMAIS perdre d'icônes/favoris si l'une des deux sources est amputée.
+async function hydrateStateFromDisk() {
+  const defs = JSON.parse(JSON.stringify(DEFAULTS));
+  let fileState = null;
+  try {
+    const r = await window.sb.stateLoad();
+    if (r && r.ok && r.state) fileState = deepMerge(defs, r.state);
+  } catch {}
+  const localState = state;   // déjà chargé depuis localStorage au top-level
+
+  if (fileState) {
+    // pour les collections clé->valeur (icônes, volumes, plays, hotkeys), on
+    // UNIT les deux sources ; pour le reste, la plus récente/riche l'emporte.
+    const merged = deepMerge(fileState, {});   // copie
+    for (const key of ['icons', 'volumes', 'plays', 'hotkeys']) {
+      merged[key] = { ...(localState[key] || {}), ...(fileState[key] || {}) };
+      // si l'une des deux a des entrées que l'autre n'a pas, on les garde toutes
+      for (const [k, v] of Object.entries(localState[key] || {})) {
+        if (!merged[key][k] || (key === 'icons' && !merged[key][k].image && v && v.image)) merged[key][k] = v;
+      }
+    }
+    // favoris : union
+    merged.favs = [...new Set([...(fileState.favs || []), ...(localState.favs || [])])];
+    state = merged;
+  }
+  // else : pas de fichier -> on garde le localStorage tel quel (1re migration)
+
+  stateHydrated = true;
+  // GARDE-FOU ANTI-CORRUPTION : n'écrit le fichier au démarrage QUE si l'état a
+  // du contenu. Écrire un état vide (localStorage perdu + pas de fichier) grave-
+  // rait le vide dans le fichier -> c'était la cause de la perte d'icônes.
+  if (Object.keys(state.icons || {}).length > 0 || Object.keys(state.plays || {}).length > 0) {
+    saveState();
+  }
+}
 // Garde-fou : jamais de valeur non-finie dans un AudioParam
 function fin(v, d) { return Number.isFinite(v) ? v : d; }
 
@@ -135,6 +201,9 @@ async function refreshDevices() {
   }
   fillSelect($('selDiscord'), devices.out, state.discord.deviceId);
   fillSelect($('selMonitor'), devices.out, state.monitor.deviceId);
+  // même liste de sorties, dupliquée dans le modulateur de voix (casque commun)
+  if ($('selVoiceMonOut')) fillSelect($('selVoiceMonOut'), devices.out, state.monitor.deviceId);
+  lastOutDevices = devices.out;
   fillSelect($('selMic'), devices.in, state.mic.deviceId);
 
   const hasCable = !!cable;
@@ -174,15 +243,20 @@ async function spawnAudio(url, sinkId, vol, file) {
   try { if (sinkId && sinkId !== 'default') await a.setSinkId(sinkId); } catch (e) {}
   a.src = url;
   active.set(a, file);
-  const done = () => { active.delete(a); updatePlaying(); };
+  // barre de progression sur la tuile. On met la référence en cache (résolue à la
+  // 1re frame) au lieu de faire un querySelector ~4x/s, et on RETIRE le listener à
+  // la fin (sinon il fuite : l'élément Audio est jeté mais le listener y restait).
+  let bar = null;
+  const onTime = () => {
+    if (!a.duration || !active.has(a)) return;
+    // (re)résout la barre si le cache est vide ou détaché du DOM (re-render pendant lecture)
+    if (!bar || !bar.isConnected) bar = document.querySelector('.tile[data-file="' + CSS.escape(file) + '"] .bar');
+    if (bar) bar.style.width = ((a.currentTime / a.duration) * 100).toFixed(1) + '%';
+  };
+  const done = () => { active.delete(a); a.removeEventListener('timeupdate', onTime); updatePlaying(); };
   a.onended = done;
   a.onerror = done;
-  // barre de progression sur la tuile
-  a.addEventListener('timeupdate', () => {
-    if (!a.duration || !active.has(a)) return;
-    const bar = document.querySelector('.tile[data-file="' + CSS.escape(file) + '"] .bar');
-    if (bar) bar.style.width = ((a.currentTime / a.duration) * 100).toFixed(1) + '%';
-  });
+  a.addEventListener('timeupdate', onTime);
   // attend d'avoir assez de données décodées pour lire d'une traite (évite le
   // hoquet start/stop quand le décodage n'est pas prêt au moment du play()).
   try {
@@ -200,20 +274,29 @@ async function spawnAudio(url, sinkId, vol, file) {
   return a;
 }
 
+// Construit les lectures vers les sorties actives (Discord + casque), selon les
+// réglages. Centralise la logique partagée entre les sons du soundboard et le TTS.
+//   localOnly : écoute privée (casque uniquement, boosté à 0.5 min)
+//   svol      : volume individuel du son (1 pour le TTS)
+function buildOutputJobs(url, file, { localOnly = false, svol = 1 } = {}) {
+  const jobs = [];
+  if (!localOnly && state.discord.enabled && state.discord.deviceId && state.discord.deviceId !== 'default') {
+    jobs.push(spawnAudio(url, state.discord.deviceId, state.discord.volume * svol, file));
+  }
+  if (state.monitor.enabled || localOnly) {
+    const mv = localOnly ? Math.max(state.monitor.volume, 0.5) : state.monitor.volume;
+    jobs.push(spawnAudio(url, state.monitor.deviceId, mv * svol, file));
+  }
+  return jobs;
+}
+
 // localOnly = écoute privée : joue uniquement dans le casque, rien vers Discord
 async function playSound(s, { localOnly = false } = {}) {
   if (!s) return;
   if (state.cut) stopAll(false);
   const url = window.sb.soundUrl(s.file);
   const svol = fin(state.volumes[s.file], 1);   // volume individuel du son
-  const jobs = [];
-  if (!localOnly && state.discord.enabled && state.discord.deviceId && state.discord.deviceId !== 'default') {
-    jobs.push(spawnAudio(url, state.discord.deviceId, state.discord.volume * svol, s.file));
-  }
-  if (state.monitor.enabled || localOnly) {
-    const mv = localOnly ? Math.max(state.monitor.volume, 0.5) : state.monitor.volume;
-    jobs.push(spawnAudio(url, state.monitor.deviceId, mv * svol, s.file));
-  }
+  const jobs = buildOutputJobs(url, s.file, { localOnly, svol });
   if (!jobs.length) { toast('⚠️ Aucune sortie active — vérifie les réglages ⚙️'); return; }
   if (!localOnly) {
     state.plays[s.file] = (state.plays[s.file] || 0) + 1;
@@ -292,18 +375,24 @@ async function setMicPassthrough(on) {
       }
     });
     const ctx = new AudioContext({ latencyHint: 'interactive', sampleRate: 48000 });
+    try { if (ctx.state === 'suspended') await ctx.resume(); } catch {}
     const src = ctx.createMediaStreamSource(stream);
     const gain = ctx.createGain();
     gain.gain.value = fin(state.mic.gain, 1);
 
-    // Suppresseur de bruit « façon Krisp » — inséré UNIQUEMENT dans la chaîne
-    // micro (les sons du soundboard passent ailleurs et ne sont pas filtrés).
+    // Suppresseur de bruit par IA (RNNoise, technique de Krisp) — inséré UNIQUEMENT
+    // dans la chaîne micro (les sons du soundboard passent ailleurs, jamais filtrés).
+    // Un réseau de neurones reconnaît la voix et supprime le reste (clavier, chien,
+    // porte…), même les bruits forts — contrairement à un noise gate.
     let denoise = null;
     try {
-      await ctx.audioWorklet.addModule('../vendor/denoise-processor.js');
-      denoise = new AudioWorkletNode(ctx, 'denoise-processor', { numberOfInputs: 1, numberOfOutputs: 1, outputChannelCount: [1] });
-      denoise.port.postMessage({ enabled: !!state.mic.denoise, strength: fin(state.mic.denoiseStrength, 0.6) });
-    } catch (e) { denoise = null; }
+      // le module WASM sync doit être chargé AVANT le processeur (il l'utilise)
+      await ctx.audioWorklet.addModule('../vendor/rnnoise/rnnoise-sync.js');
+      await ctx.audioWorklet.addModule('../vendor/rnnoise/rnnoise-processor.js');
+      denoise = new AudioWorkletNode(ctx, 'rnnoise-processor', { numberOfInputs: 1, numberOfOutputs: 1, outputChannelCount: [1] });
+      denoise.port.postMessage({ enabled: !!state.mic.denoise, mix: 1, gate: fin(state.mic.denoiseGate, 0.7) });
+      denoise.port.onmessage = (e) => { if (e.data && e.data.error) console.error('RNNoise:', e.data.error); };
+    } catch (e) { console.error('RNNoise load:', e); denoise = null; }
 
     // Chaîne de modulation de voix insérée entre le gain et les sorties
     const fx = new VoiceFX(ctx);
@@ -349,6 +438,7 @@ async function setMicPassthrough(on) {
       toast('🎧 Mode test : active « M\'entendre » pour écouter ta voix transformée');
     }
     updateVoiceStatus();
+    if (typeof refreshDenoiseChip === 'function') refreshDenoiseChip();
   } catch (e) {
     toast('Erreur micro : ' + e.message);
     state.mic.enabled = false; $('swMic').checked = false; saveState();
@@ -357,12 +447,15 @@ async function setMicPassthrough(on) {
 
 /* ================== Modulation de voix ================== */
 function currentVoicePreset() {
-  return (window.VOICE_PRESETS || []).find(p => p.id === state.voice.preset)
+  const id = state.voice.preset;
+  return (window.VOICE_PRESETS || []).find(p => p.id === id)
+    || (state.voice.custom || []).find(p => p.id === id)
     || window.VOICE_PRESETS[0];
 }
 
 // Change de preset ; applique en direct si le micro tourne, sinon mémorise pour le prochain démarrage
 function setVoicePreset(id) {
+  xyActive = false;   // choisir un preset sort du mode pad XY
   state.voice.preset = id;
   saveState();
   const preset = currentVoicePreset();
@@ -370,7 +463,116 @@ function setVoicePreset(id) {
     micNodes.fx.applyPreset(preset);
   }
   renderVoice();
+  renderCustomVoices();
   updateVoiceStatus();
+}
+
+/* ================== Pad XY (contrôle live pitch/timbre) ================== */
+let xyActive = false;   // le pad XY pilote la voix en ce moment
+
+// Applique le mode XY : base = preset actuel, chaîne « live » modulable
+function xyEnsureLive() {
+  if (!micNodes || !micNodes.fx) return;
+  const base = currentVoicePreset();
+  // on repart du preset courant mais en mode live (pitch + filtre timbre branchés)
+  micNodes.fx.applyPreset({ pitch: base.pitch || 0, effects: base.effects || [] }, { live: true });
+}
+
+function xyApply(pitch, timbre) {
+  state.voice.xy = { pitch, timbre };
+  if (micNodes && micNodes.fx && micNodes.fx.setXY) micNodes.fx.setXY(pitch, timbre);
+  const ro = $('xyReadout');
+  if (ro) ro.textContent = 'Hauteur ' + (pitch > 0 ? '+' : '') + pitch.toFixed(1) + ' · Timbre ' + (timbre > 0 ? '+' : '') + Math.round(timbre * 100) + '%';
+  const dot = $('xyDot');
+  if (dot) { dot.style.left = ((pitch + 12) / 24 * 100) + '%'; dot.style.top = ((1 - timbre) / 2 * 100) + '%'; }
+}
+
+// Coordonnées écran -> (pitch -12..+12, timbre -1..+1)
+function xyFromEvent(e) {
+  const pad = $('xyPad'); const r = pad.getBoundingClientRect();
+  const x = Math.min(1, Math.max(0, (e.clientX - r.left) / r.width));
+  const y = Math.min(1, Math.max(0, (e.clientY - r.top) / r.height));
+  return { pitch: (x * 24 - 12), timbre: (1 - y * 2) };
+}
+
+function initXYPad() {
+  const pad = $('xyPad'); if (!pad) return;
+  // position initiale
+  const xy = state.voice.xy || { pitch: 0, timbre: 0 };
+  xyApply(fin(xy.pitch, 0), fin(xy.timbre, 0));
+  let dragging = false;
+  const start = (e) => {
+    dragging = true; xyActive = true; pad.classList.add('active');
+    xyEnsureLive();
+    move(e);
+    if (!state.mic.enabled) toast('🎛️ Pad XY actif — active « 🎤 Mon micro → Discord » pour l\'entendre');
+  };
+  const move = (e) => { if (!dragging) return; const { pitch, timbre } = xyFromEvent(e); xyApply(pitch, timbre); };
+  const end = () => { if (dragging) { dragging = false; pad.classList.remove('active'); saveState(); } };
+  pad.addEventListener('pointerdown', (e) => { pad.setPointerCapture(e.pointerId); start(e); });
+  pad.addEventListener('pointermove', move);
+  pad.addEventListener('pointerup', end);
+  pad.addEventListener('pointercancel', end);
+  $('xyReset').addEventListener('click', () => { xyApply(0, 0); saveState(); });
+}
+
+/* ================== Voix personnalisées ================== */
+function renderCustomVoices() {
+  const box = $('customVoiceGrid'); if (!box) return;
+  const list = state.voice.custom || [];
+  box.innerHTML = '';
+  for (const v of list) {
+    const el = document.createElement('div');
+    el.className = 'cvtile' + (state.voice.preset === v.id ? ' sel' : '');
+    el.innerHTML =
+      '<div class="cv-emoji">' + (v.emoji || '🎙️') + '</div>' +
+      '<div class="cv-name">' + esc(v.name) + '</div>' +
+      '<button class="cv-del" title="Supprimer">🗑️</button>';
+    el.addEventListener('click', (e) => {
+      if (e.target.classList.contains('cv-del')) { deleteCustomVoice(v.id); return; }
+      applyCustomVoice(v);
+    });
+    box.appendChild(el);
+  }
+}
+
+function applyCustomVoice(v) {
+  xyActive = false;
+  state.voice.preset = v.id;
+  state.voice.xy = { pitch: fin(v.xy?.pitch, 0), timbre: fin(v.xy?.timbre, 0) };
+  saveState();
+  if (micNodes && micNodes.fx) {
+    micNodes.fx.applyPreset({ pitch: v.pitch || 0, effects: v.effects || [] }, { live: true });
+    if (v.xy) micNodes.fx.setXY(v.xy.pitch || 0, v.xy.timbre || 0);
+  }
+  renderVoice(); renderCustomVoices(); updateVoiceStatus();
+}
+
+async function saveCurrentVoice() {
+  const name = await askText({ title: '💾 Enregistrer la voix', sub: 'Nom de ta voix perso (ex : « Mon gremlin »)' });
+  if (!name || !name.trim()) return;
+  const base = currentVoicePreset();
+  const xy = state.voice.xy || { pitch: 0, timbre: 0 };
+  const v = {
+    id: 'cv' + Date.now().toString(36),
+    name: name.trim().slice(0, 30),
+    emoji: base.emoji || '🎙️',
+    pitch: base.pitch || 0,
+    effects: base.effects || [],
+    xy: { pitch: fin(xy.pitch, 0), timbre: fin(xy.timbre, 0) },
+  };
+  state.voice.custom = [...(state.voice.custom || []), v];
+  saveState();
+  renderCustomVoices();
+  toast('💾 Voix « ' + v.name + ' » enregistrée');
+}
+
+function deleteCustomVoice(id) {
+  if (!confirm('Supprimer cette voix perso ?')) return;
+  state.voice.custom = (state.voice.custom || []).filter(v => v.id !== id);
+  if (state.voice.preset === id) setVoicePreset('none');
+  saveState();
+  renderCustomVoices();
 }
 
 // Applique en direct les réglages du suppresseur de bruit micro (façon Krisp).
@@ -379,18 +581,29 @@ function applyDenoise() {
   if (micNodes && micNodes.denoise) {
     micNodes.denoise.port.postMessage({
       enabled: !!state.mic.denoise,
-      strength: fin(state.mic.denoiseStrength, 0.6),
+      mix: 1,                                  // toujours 100% débruité (RNNoise)
+      gate: fin(state.mic.denoiseGate, 0.7),   // gate VAD : coupe clavier/bruits de bouche entre les phrases
     });
   }
   const dot = $('dotDenoise');
   if (dot) dot.style.background = state.mic.denoise ? 'var(--green)' : 'var(--text-dim)';
+  // reflète aussi dans le chip de la barre d'état (bouton dédié)
+  if (typeof refreshDenoiseChip === 'function') refreshDenoiseChip();
 }
 
 // Active/coupe le retour casque de ta voix (effets classiques ; le live IA
 // VCClient gère son propre monitor dans sa fenêtre).
 function applyVoiceMonitor() {
-  if (micNodes && micNodes.monGain) {
-    micNodes.monGain.gain.value = state.voice.monitor ? fin(state.voice.monitorVol, 0.7) : 0;
+  if (!micNodes || !micNodes.monGain) return;
+  const on = state.voice.monitor;
+  micNodes.monGain.gain.value = on ? fin(state.voice.monitorVol, 0.7) : 0;
+  // Quand on RÉ-active le retour, l'élément <audio> a pu être suspendu tant que le
+  // gain était à 0 (flux silencieux) — il faut explicitement reprendre le contexte
+  // ET relancer la lecture, sinon aucun son ne sort avant un re-toggle du micro.
+  if (on && micNodes.monEl) {
+    try { if (micNodes.ctx && micNodes.ctx.state === 'suspended') micNodes.ctx.resume(); } catch {}
+    const el = micNodes.monEl;
+    if (el.paused) { const p = el.play(); if (p && p.catch) p.catch(() => {}); }
   }
 }
 function setVoiceMonitor(on) {
@@ -422,6 +635,18 @@ function updateVoiceStatus() {
   if (warn) warn.style.display = (state.mic.enabled || iaLive ? 'none' : 'block');
   const sw = $('swVoiceMon');
   if (sw) sw.checked = state.voice.monitor;
+  // Rappel du casque de retour : signale si la sortie est « par défaut » (peut
+  // ne pas être ton casque) quand « M'entendre » est actif.
+  const outHint = $('voiceMonOutHint');
+  if (outHint) {
+    if (state.voice.monitor && (!state.monitor.deviceId || state.monitor.deviceId === 'default')) {
+      outHint.innerHTML = '⚠️ Sortie « par défaut » du système — si tu ne t\'entends pas, choisis explicitement ton casque ci-dessus.';
+      outHint.style.color = 'var(--yellow)';
+    } else {
+      outHint.innerHTML = 'Même casque que « Écouter les sons » des réglages. Si tu ne t\'entends pas, vérifie que c\'est bien ton casque ici.';
+      outHint.style.color = '';
+    }
+  }
   // griser les effets classiques quand l'IA prend le micro
   const grid = $('voiceGrid');
   if (grid) { grid.style.opacity = iaLive ? '0.4' : '1'; grid.style.pointerEvents = iaLive ? 'none' : ''; }
@@ -986,6 +1211,16 @@ function attachDrop(el, folder) {
   });
 }
 
+// Rendu coalescé : plusieurs appels rapprochés (ex. frappe dans la recherche) ne
+// déclenchent qu'UN seul render() à la prochaine frame — évite de reconstruire la
+// liste à chaque caractère, sans délai perceptible.
+let _renderScheduled = false;
+function scheduleRender() {
+  if (_renderScheduled) return;
+  _renderScheduled = true;
+  requestAnimationFrame(() => { _renderScheduled = false; render(); });
+}
+
 function render() {
   const q = norm($('search').value.trim());
   const filtered = q ? sounds.filter(s => norm(s.name).includes(q)) : sounds;
@@ -1004,6 +1239,9 @@ function render() {
     return;
   }
 
+  // On construit toutes les sections dans un fragment hors-DOM, puis on l'attache
+  // en UNE fois : évite un reflow par section pendant la construction.
+  const frag = document.createDocumentFragment();
   const favs = filtered.filter(s => state.favs.includes(s.file));
   const groups = new Map();
   for (const s of filtered) {
@@ -1012,10 +1250,25 @@ function render() {
     groups.get(g).push(s);
   }
 
+  // Tri « plus joués » : on FIGE l'ordre à la première construction (playsOrder).
+  // Tant qu'il n'est pas invalidé (invalidatePlaysOrder), on réutilise ce rang —
+  // jouer un son incrémente son compteur pour la PROCHAINE ouverture, mais ne le
+  // fait pas sauter dans la liste pendant qu'on l'utilise.
+  if (state.sort === 'plays' && !playsOrder) {
+    const all = [...sounds].sort((a, b) =>
+      (state.plays[b.file] || 0) - (state.plays[a.file] || 0) || a.name.localeCompare(b.name, 'fr'));
+    playsOrder = new Map(all.map((s, i) => [s.file, i]));
+  }
   // tri des sons dans chaque section selon le réglage
   const sortList = (list) => {
     const l = [...list];
-    if (state.sort === 'plays') l.sort((a, b) => (state.plays[b.file] || 0) - (state.plays[a.file] || 0) || a.name.localeCompare(b.name, 'fr'));
+    if (state.sort === 'plays') {
+      l.sort((a, b) => {
+        const ra = playsOrder.has(a.file) ? playsOrder.get(a.file) : Infinity;
+        const rb = playsOrder.has(b.file) ? playsOrder.get(b.file) : Infinity;
+        return ra - rb || a.name.localeCompare(b.name, 'fr');
+      });
+    }
     else if (state.sort === 'recent') l.sort((a, b) => b.mtime - a.mtime);
     return l; // 'name' : déjà trié par le scan
   };
@@ -1070,17 +1323,24 @@ function render() {
       }));
     }
     if (droppable) attachDrop(wrap, folder);
-    c.appendChild(wrap);
+    frag.appendChild(wrap);
   };
 
   if (favs.length) addSection({ title: '⭐ Favoris', list: favs });
 
-  // Les plus joués (top 6) — dès qu'au moins 3 sons ont été joués
+  // Les plus joués (top 6) — dès qu'au moins 3 sons ont été joués.
+  // On FIGE la sélection (mêmes règles que playsOrder) pour que le son cliqué ne
+  // saute pas dans/hors du top pendant qu'on l'utilise.
   if (!q) {
-    const top = filtered
-      .filter(x => (state.plays[x.file] || 0) > 0)
-      .sort((a, b) => (state.plays[b.file] || 0) - (state.plays[a.file] || 0))
-      .slice(0, 6);
+    if (!topPlayedSnapshot) {
+      topPlayedSnapshot = sounds
+        .filter(x => (state.plays[x.file] || 0) > 0)
+        .sort((a, b) => (state.plays[b.file] || 0) - (state.plays[a.file] || 0))
+        .slice(0, 6)
+        .map(x => x.file);
+    }
+    const byFile = new Map(filtered.map(s => [s.file, s]));
+    const top = topPlayedSnapshot.map(f => byFile.get(f)).filter(Boolean);
     if (top.length >= 3) addSection({ title: '🔥 Les plus joués', list: top });
   }
 
@@ -1106,6 +1366,7 @@ function render() {
       });
     }
   }
+  c.appendChild(frag);   // attache toutes les sections d'un coup
   updatePlaying();
 }
 
@@ -1598,6 +1859,7 @@ $('editModal').addEventListener('mousedown', (e) => { if (e.target.id === 'editM
 /* ================== Capture d'un accélérateur ================== */
 let capturing = null;
 let capturingReplayGrab = false;   // capture en cours du raccourci « figer les X dernières secondes »
+let capturingLooperKey = null;     // champ du looper (captureKey/toggleKey/retriggerKey) en cours de réassignation
 function captureKey(s) {
   capturing = s;
   $('keyCaptureName').textContent = '« ' + s.name + ' »';
@@ -1673,6 +1935,24 @@ document.addEventListener('keydown', (e) => {
     return;
   }
 
+  // Capture d'une touche du live looper (capture / boucle / retrigger)
+  if (capturingLooperKey) {
+    const field = capturingLooperKey;
+    if (e.key === 'Escape') { capturingLooperKey = null; refreshLooperKeys(); return; }
+    const acc = toGlobalAccelerator(e);
+    if (!acc) return;
+    e.preventDefault();
+    capturingLooperKey = null;
+    // évite qu'une même touche serve à 2 actions du looper
+    const lp = state.replay.looper;
+    for (const k of ['captureKey', 'toggleKey', 'retriggerKey']) if (k !== field && lp[k] === acc) lp[k] = '';
+    lp[field] = acc;
+    saveState();
+    applyGlobalHotkeys();
+    refreshLooperKeys();
+    return;
+  }
+
   if (capturing) {
     const s = capturing;
     if (e.key === 'Escape') { capturing = null; $('keyCapture').classList.remove('show'); return; }
@@ -1718,7 +1998,12 @@ document.addEventListener('keydown', (e) => {
 
 /* ================== Raccourcis globaux (via Electron) ================== */
 async function applyGlobalHotkeys() {
-  const r = await window.sb.setGlobalHotkeys(state.hotkeys, state.globalHotkeys, state.replay.grabHotkey || '');
+  // raccourcis du live looper (uniquement s'il est activé)
+  const lp = state.replay.looper || {};
+  const looperKeys = lp.enabled ? {
+    capture: lp.captureKey || '', toggle: lp.toggleKey || '', retrigger: lp.retriggerKey || '',
+  } : null;
+  const r = await window.sb.setGlobalHotkeys(state.hotkeys, state.globalHotkeys, state.replay.grabHotkey || '', looperKeys);
   const warn = $('globalWarn');
   if (state.globalHotkeys && r && r.failed && r.failed.length) {
     warn.textContent = '⚠️ Impossible d\'enregistrer : ' + r.failed.join(', ') + ' (déjà utilisé par une autre appli). Choisis une autre combinaison.';
@@ -1731,6 +2016,8 @@ async function loadSounds() {
   const [snds, flds] = await Promise.all([window.sb.listSounds(), window.sb.listFolders()]);
   sounds = Array.isArray(snds) ? snds : [];
   folders = Array.isArray(flds) ? flds : [];
+  playsOrder = null;   // bibliothèque rechargée → on autorise un re-classement « plus joués »
+  topPlayedSnapshot = null;
   $('statApp').textContent = 'Application prête · ' + sounds.length + ' son' + (sounds.length > 1 ? 's' : '');
   render();
   if ($('replayView') && $('replayView').style.display === 'block') renderClips();
@@ -1823,14 +2110,45 @@ bindSwitch('swMic', () => state.mic.enabled, v => {
 });
 bindSwitch('swGlobal', () => state.globalHotkeys, v => { state.globalHotkeys = v; applyGlobalHotkeys(); });
 bindSelect('selDiscord', () => state.discord.deviceId, v => { state.discord.deviceId = v; if (state.mic.enabled) setMicPassthrough(true); });
-bindSelect('selMonitor', () => state.monitor.deviceId, v => {
+// Le casque de retour est COMMUN : les sons du soundboard ET la voix transformée
+// sortent sur state.monitor.deviceId. Deux <select> le pilotent (réglages + voix) ;
+// on les garde synchronisés et on ré-oriente le flux voix en direct.
+function setMonitorDevice(v) {
   state.monitor.deviceId = v;
-  // le retour casque de la voix suit le même périphérique
+  saveState();
+  const sel1 = $('selMonitor'), sel2 = $('selVoiceMonOut');
+  if (sel1 && sel1.value !== v) sel1.value = v;
+  if (sel2 && sel2.value !== v) sel2.value = v;
   if (micNodes && micNodes.monEl) {
     const sink = v && v !== 'default' ? v : '';
     micNodes.monEl.setSinkId(sink).catch(() => {});
   }
-});
+  if (typeof updateVoiceStatus === 'function') updateVoiceStatus();
+}
+bindSelect('selMonitor', () => state.monitor.deviceId, setMonitorDevice);
+bindSelect('selVoiceMonOut', () => state.monitor.deviceId, setMonitorDevice);
+
+// Bip de test sur le casque de retour choisi (confirme le bon périphérique)
+async function testMonitorBip() {
+  const sink = state.monitor.deviceId && state.monitor.deviceId !== 'default' ? state.monitor.deviceId : '';
+  try {
+    const ctx = new AudioContext();
+    const dest = ctx.createMediaStreamDestination();
+    const o = ctx.createOscillator(); o.type = 'sine'; o.frequency.value = 660;
+    const g = ctx.createGain(); g.gain.value = 0;
+    const t = ctx.currentTime;
+    g.gain.setValueAtTime(0, t); g.gain.linearRampToValueAtTime(0.3, t + 0.02);
+    g.gain.setValueAtTime(0.3, t + 0.28); g.gain.linearRampToValueAtTime(0, t + 0.35);
+    o.connect(g); g.connect(dest); o.start(); o.stop(t + 0.4);
+    const a = new Audio(); a.srcObject = dest.stream;
+    if (sink) { try { await a.setSinkId(sink); } catch {} }
+    await a.play();
+    setTimeout(() => { a.pause(); ctx.close().catch(() => {}); }, 600);
+    toast('🎧 Bip envoyé sur le casque de retour');
+  } catch (e) { toast('Erreur test casque : ' + e.message); }
+}
+$('testMonitor') && $('testMonitor').addEventListener('click', testMonitorBip);
+$('testVoiceMon') && $('testVoiceMon').addEventListener('click', testMonitorBip);
 bindSelect('selMic', () => state.mic.deviceId, v => { state.mic.deviceId = v; if (state.mic.enabled) setMicPassthrough(true); });
 bindVol('volDiscord', 'volDiscordLbl', () => state.discord.volume, v => state.discord.volume = v);
 bindVol('volMonitor', 'volMonitorLbl', () => state.monitor.volume, v => state.monitor.volume = v);
@@ -1843,11 +2161,145 @@ bindSwitch('swDenoise', () => state.mic.denoise, v => {
   applyDenoise();
 });
 $('denoiseOpts').style.display = state.mic.denoise ? 'block' : 'none';
-bindVol('denoiseStrength', 'denoiseStrengthLbl', () => fin(state.mic.denoiseStrength, 0.6),
-  v => { state.mic.denoiseStrength = v; applyDenoise(); });
+bindVol('denoiseGate', 'denoiseGateLbl', () => fin(state.mic.denoiseGate, 0.7),
+  v => { state.mic.denoiseGate = v; applyDenoise(); });
 
 $('btnSettings').addEventListener('click', () => $('settings').classList.toggle('open'));
 $('settingsClose').addEventListener('click', () => $('settings').classList.remove('open'));
+
+/* ================== Profils (bibliothèques séparées) ================== */
+let profiles = [], activeProfileId = null;
+
+async function refreshProfiles() {
+  try {
+    const r = await window.sb.profiles.list();
+    profiles = r.profiles || [];
+    activeProfileId = r.active;
+  } catch { profiles = []; }
+  renderProfilesUI();
+}
+
+function activeProfile() { return profiles.find(p => p.id === activeProfileId) || profiles[0]; }
+
+function renderProfilesUI() {
+  // chip dans la barre d'état
+  const chip = $('profileName');
+  if (chip) chip.textContent = activeProfile()?.name || 'Défaut';
+  // liste dans les réglages
+  const box = $('profilesList');
+  if (box) {
+    box.innerHTML = '';
+    for (const p of profiles) {
+      const row = document.createElement('div');
+      row.className = 'profile-row' + (p.id === activeProfileId ? ' active' : '');
+      row.innerHTML =
+        '<span class="pr-name">👤 ' + esc(p.name) + '</span>' +
+        (p.id === activeProfileId ? '<span class="pr-badge">ACTIF</span>' : '') +
+        '<span class="pr-acts">' +
+          (p.id === activeProfileId ? '' : '<button data-pr="switch" title="Basculer sur ce profil">➡️</button>') +
+          '<button data-pr="rename" title="Renommer">✏️</button>' +
+          (profiles.length > 1 ? '<button data-pr="del" title="Supprimer">🗑️</button>' : '') +
+        '</span>';
+      row.querySelectorAll('[data-pr]').forEach(b => b.addEventListener('click', () => {
+        const act = b.dataset.pr;
+        if (act === 'switch') switchProfile(p.id);
+        else if (act === 'rename') renameProfile(p);
+        else if (act === 'del') deleteProfile(p);
+      }));
+      box.appendChild(row);
+    }
+  }
+}
+
+async function switchProfile(id) {
+  if (id === activeProfileId) return;
+  const p = profiles.find(x => x.id === id);
+  toast('👤 Bascule vers « ' + (p?.name || '') + ' »…');
+  await window.sb.profiles.switch(id);   // le main recharge la fenêtre
+}
+
+async function createProfile() {
+  const name = await askText({ title: '👤 Nouveau profil', sub: 'Ex : JDR, Stream, Entre potes…' });
+  if (!name || !name.trim()) return;
+  const r = await window.sb.profiles.create(name.trim());
+  if (r.ok) {
+    await refreshProfiles();
+    if (confirm('Profil « ' + r.name + ' » créé (vide).\nBasculer dessus maintenant ?')) switchProfile(r.id);
+  } else toast('❌ ' + (r.error || 'Erreur'));
+}
+
+async function renameProfile(p) {
+  const name = await askText({ title: '✏️ Renommer le profil', sub: p.name, value: p.name });
+  if (!name || !name.trim() || name.trim() === p.name) return;
+  const r = await window.sb.profiles.rename(p.id, name.trim());
+  if (r.ok) await refreshProfiles();
+  else toast('❌ ' + (r.error || 'Erreur'));
+}
+
+async function deleteProfile(p) {
+  if (!confirm('Supprimer le profil « ' + p.name + ' » ?\n\nSes sons ne sont PAS effacés : le dossier est déplacé dans _profils/_supprimes (récupérable).')) return;
+  const r = await window.sb.profiles.remove(p.id);
+  if (r.ok) {
+    const wasActive = p.id === activeProfileId;
+    await refreshProfiles();
+    if (wasActive) await window.sb.profiles.switch(r.active);   // recharge sur le nouveau profil actif
+  } else toast('❌ ' + (r.error || 'Erreur'));
+}
+
+// Menu déroulant depuis le chip de la barre d'état
+$('profileSwitch').addEventListener('click', (e) => {
+  e.stopPropagation();
+  const menu = $('profileMenu');
+  if (menu.style.display === 'block') { menu.style.display = 'none'; return; }
+  menu.innerHTML = '';
+  for (const p of profiles) {
+    const it = document.createElement('div');
+    it.className = 'pm-item' + (p.id === activeProfileId ? ' active' : '');
+    it.textContent = (p.id === activeProfileId ? '✓ ' : '👤 ') + p.name;
+    it.addEventListener('click', () => { menu.style.display = 'none'; switchProfile(p.id); });
+    menu.appendChild(it);
+  }
+  const sep = document.createElement('div'); sep.className = 'pm-sep'; menu.appendChild(sep);
+  const add = document.createElement('div');
+  add.className = 'pm-item'; add.textContent = '➕ Nouveau profil…';
+  add.addEventListener('click', () => { menu.style.display = 'none'; createProfile(); });
+  menu.appendChild(add);
+  // positionne au-dessus du chip
+  menu.style.display = 'block';
+  const r = $('profileSwitch').getBoundingClientRect();
+  const mh = menu.getBoundingClientRect().height;
+  menu.style.left = r.left + 'px';
+  menu.style.top = Math.max(6, r.top - mh - 6) + 'px';
+});
+document.addEventListener('click', () => { const m = $('profileMenu'); if (m) m.style.display = 'none'; });
+$('profileAdd').addEventListener('click', createProfile);
+
+/* ===== Chip réduction de bruit (barre d'état) ===== */
+function refreshDenoiseChip() {
+  const lbl = $('denoiseChipLbl'), chip = $('denoiseChip');
+  if (!lbl || !chip) return;
+  const on = !!state.mic.denoise;
+  const micOn = !!state.mic.enabled;
+  lbl.textContent = 'Anti-bruit : ' + (on ? (micOn ? 'ON' : 'ON (micro off)') : 'off');
+  chip.classList.toggle('on', on);
+  chip.title = on
+    ? (micOn ? 'Réduction de bruit IA active sur ton micro — clique pour couper'
+             : 'Anti-bruit activé mais ton micro n\'est pas envoyé à Discord (active « Mon micro → Discord » dans les réglages)')
+    : 'Activer la réduction de bruit IA du micro (façon Krisp)';
+}
+$('denoiseChip').addEventListener('click', () => {
+  state.mic.denoise = !state.mic.denoise;
+  saveState();
+  const sw = $('swDenoise'); if (sw) sw.checked = state.mic.denoise;
+  const opts = $('denoiseOpts'); if (opts) opts.style.display = state.mic.denoise ? 'block' : 'none';
+  applyDenoise();
+  if (state.mic.denoise && !state.mic.enabled) {
+    toast('🛡️ Anti-bruit activé. Active « 🎤 Mon micro → Discord » (réglages) pour qu\'il agisse.');
+  } else {
+    toast(state.mic.denoise ? '🛡️ Réduction de bruit IA activée' : '🛡️ Réduction de bruit désactivée');
+  }
+});
+refreshDenoiseChip();
 
 /* ----- Densité d'affichage des sons (grille / compact / liste) ----- */
 const VIEWS = { grid: '▦', compact: '▤', list: '☰' };
@@ -1892,7 +2344,7 @@ $('btnNewCat').addEventListener('click', catCreate);
 function updateSearchClear() {
   $('searchClear').style.display = $('search').value ? 'grid' : 'none';
 }
-$('search').addEventListener('input', () => { updateSearchClear(); render(); });
+$('search').addEventListener('input', () => { updateSearchClear(); scheduleRender(); });
 $('searchClear').addEventListener('click', () => {
   $('search').value = '';
   updateSearchClear();
@@ -1905,6 +2357,8 @@ updateSearchClear();
 $('sortSel').value = state.sort;
 $('sortSel').addEventListener('change', (e) => {
   state.sort = e.target.value;
+  playsOrder = null;   // choix explicite du tri → re-classement autorisé
+  topPlayedSnapshot = null;
   saveState();
   render();
 });
@@ -2029,18 +2483,27 @@ let ttsDecodeCtx = null;  // AudioContext 48 kHz dédié au décodage
 // Remplit le sélecteur « Puis convertir en… » avec les voix du moteur (s'il tourne)
 async function refreshTtsAi() {
   const sel = $('ttsAiVoice');
+  const launchBtn = $('ttsAiLaunch');
   const cur = sel.value;
   sel.innerHTML = '<option value="">— personne (voix TTS pure) —</option>';
   ttsAiNames = {};
   try {
     const st = await window.sb.vcclient.status();
-    if (!st.running) {
+    if (!st.installed) {
       const o = document.createElement('option');
-      o.disabled = true;
-      o.textContent = '🧠 (lance le moteur dans l\'onglet Voix)';
+      o.disabled = true; o.textContent = '🧠 (installe le moteur dans l\'onglet Voix)';
       sel.appendChild(o);
+      if (launchBtn) launchBtn.style.display = 'none';
       return;
     }
+    if (!st.running) {
+      const o = document.createElement('option');
+      o.disabled = true; o.textContent = '🧠 (moteur arrêté — clique ▶️ Moteur)';
+      sel.appendChild(o);
+      if (launchBtn) launchBtn.style.display = '';   // propose de lancer ici même
+      return;
+    }
+    if (launchBtn) launchBtn.style.display = 'none';
     const slots = await vca('/api/slot-manager/slots');
     for (const s of slots.filter(x => x.name)) {
       ttsAiNames[s.slot_index] = s.name;
@@ -2093,14 +2556,7 @@ async function ttsSay(text, { localOnly = false, voice = null, ai = undefined } 
 
     const blob = new Blob([playData], { type: mime });
     const url = URL.createObjectURL(blob);
-    const jobs = [];
-    if (!localOnly && state.discord.enabled && state.discord.deviceId && state.discord.deviceId !== 'default') {
-      jobs.push(spawnAudio(url, state.discord.deviceId, state.discord.volume, '__tts__'));
-    }
-    if (state.monitor.enabled || localOnly) {
-      const mv = localOnly ? Math.max(state.monitor.volume, 0.5) : state.monitor.volume;
-      jobs.push(spawnAudio(url, state.monitor.deviceId, mv, '__tts__'));
-    }
+    const jobs = buildOutputJobs(url, '__tts__', { localOnly });
     if (!jobs.length) { ttsStatus('⚠️ Aucune sortie active — vérifie les réglages ⚙️', true); return; }
     ttsStatus((localOnly ? '🎧 Lecture en privé' : '📢 Dit dans Discord !')
       + (aiSlot != null ? ' (voix de ' + (ttsAiNames[aiSlot] || 'l\'IA') + ')' : ''));
@@ -2164,6 +2620,16 @@ function renderTtsHistory() {
 
 $('ttsSay').addEventListener('click', () => ttsSay($('ttsText').value));
 $('ttsPreview').addEventListener('click', () => ttsSay($('ttsText').value, { localOnly: true }));
+// Lancer le moteur de voix IA directement depuis l'onglet Dire
+$('ttsAiLaunch').addEventListener('click', async () => {
+  const btn = $('ttsAiLaunch');
+  btn.disabled = true; btn.innerHTML = '<span class="spin">⏳</span>';
+  ttsStatus('🧠 Démarrage du moteur de voix IA (~30-40 s)…');
+  const r = await window.sb.vcclient.launch();
+  btn.disabled = false; btn.innerHTML = '▶️ Moteur';
+  if (r && r.ok) { ttsStatus('✅ Moteur prêt — choisis une voix dans « Puis convertir en… »'); await refreshTtsAi(); }
+  else ttsStatus('❌ ' + ((r && r.error) || 'Échec du démarrage'), true);
+});
 $('ttsText').addEventListener('keydown', (e) => {
   if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); ttsSay($('ttsText').value); }
 });
@@ -2192,8 +2658,8 @@ function switchTab(tab) {
   for (const id of ['sortSel', 'viewBtn', 'btnRandom', 'btnAdd', 'btnUrl', 'btnNewCat']) {
     $(id).style.display = isSounds ? '' : 'none';
   }
-  if (tab === 'voice') { renderVoice(); updateVoiceStatus(); refreshIaSection(); }
-  if (tab === 'replay') { refreshReplayTab(); setReplayMode(state.replay.mode || 'audio'); }
+  if (tab === 'voice') { renderVoice(); renderCustomVoices(); updateVoiceStatus(); refreshIaSection(); }
+  if (tab === 'replay') { refreshReplayTab(); setReplayMode(state.replay.mode || 'audio'); refreshLooperUI(); refreshLooperKeys(); }
   if (tab === 'tts') { renderTtsHistory(); refreshTtsAi(); $('ttsText').focus(); }
   if (tab === 'guide') renderGuideKeys();
 }
@@ -2226,6 +2692,8 @@ $('voiceEnableMic').addEventListener('click', () => {
   updateVoiceStatus();
 });
 $('swVoiceMon').addEventListener('change', (e) => setVoiceMonitor(e.target.checked));
+$('voicePresetSave').addEventListener('click', (e) => { e.stopPropagation(); saveCurrentVoice(); });
+initXYPad();
 // Volume du retour casque (appliqué en direct aux deux modes : effets et IA)
 (() => {
   const el = $('volVoiceMon'), lbl = $('volVoiceMonLbl');
@@ -2743,12 +3211,12 @@ function refreshReplayTab() {
   const on = replayActive;
   const sw = $('swReplay2'); if (sw) sw.checked = on;
   const st = $('replayState2');
-  if (st) { st.textContent = on ? 'Capture active 🔴' : 'Capture inactive'; st.className = 'replay-status' + (on ? ' on' : ''); }
+  if (st) { st.textContent = on ? 'Capture active 🔴' : 'Capture inactive'; st.className = 'cap-state' + (on ? ' on' : ''); }
   const grab = $('replayGrab');
   if (grab) {
     grab.disabled = !on;
     grab.classList.toggle('armed', on);
-    grab.querySelector('.replay-grab-txt').textContent = on
+    grab.querySelector('.grab-txt').textContent = on
       ? 'Capturer les ' + fin(state.replay.seconds, 5) + ' dernières secondes'
       : 'Activer la capture d\'abord';
   }
@@ -2890,10 +3358,10 @@ async function startReplay() {
       replayStream = await navigator.mediaDevices.getUserMedia({ audio: { deviceId: devId, echoCancellation: false, noiseSuppression: false, autoGainControl: false } });
     } else {
       // « ce que j'entends » : capture le son SYSTÈME (WASAPI loopback), sans Mixage stéréo.
-      // getDisplayMedia passe par le handler loopback du main process ; on jette la vidéo.
+      // video:false -> le handler main ne démarre PAS de capture d'écran (pas de spam WGC).
       let disp;
       try {
-        disp = await navigator.mediaDevices.getDisplayMedia({ audio: true, video: true });
+        disp = await navigator.mediaDevices.getDisplayMedia({ audio: true, video: false });
       } catch (err) {
         $('replayHint2').innerHTML = '⚠️ Capture du son système refusée. Réessaie, ou utilise la source « Mon micro ».';
         $('swReplay2').checked = false; return;
@@ -3049,6 +3517,7 @@ $('replaySource2').addEventListener('change', (e) => { state.replay.source = e.t
   $('yamAutoClip').checked = !!state.replay.yamAutoClip;
   $('yamAutoClip').addEventListener('change', (e) => { state.replay.yamAutoClip = e.target.checked; saveState(); });
   $('yamSwitch').addEventListener('change', async (e) => {
+    if (typeof openAdvCard === 'function') openAdvCard(e.target);
     if (e.target.checked) {
       yamWantsOn = true;
       const st = await window.sb.yamnet.status();
@@ -3079,6 +3548,225 @@ $('replaySource2').addEventListener('change', (e) => { state.replay.source = e.t
   });
 })();
 $('btnReplay').addEventListener('click', saveReplay);
+
+/* ================== Live looper (capture micro -> boucle) ==================
+   F1 (par défaut) capture les X dernières secondes du micro dans un ring buffer
+   dédié ; F2 lance/arrête la boucle (toggle) ; F3 relance depuis le début
+   (retrigger façon sampler). Tout fonctionne même hors focus (raccourcis globaux).
+*/
+let loopRing = null, loopWrite = 0, loopFilled = 0, loopSR = 48000;
+let loopStream = null, loopCtx = null, loopSrcNode = null, loopProc = null;
+let loopActive = false;              // le buffer de capture tourne
+let loopSample = null;              // { url, blob, seconds } dernier échantillon figé
+let loopEls = [];                   // éléments <Audio> de la boucle en cours (1 par sortie)
+let loopPlaying = false;
+
+function looperSeconds() { return fin(state.replay.looper?.seconds, 2); }
+
+// Démarre le buffer de capture (micro, + son du PC si source='both')
+async function startLooperCapture() {
+  stopLooperCapture();
+  const cfg = state.replay.looper;
+  try {
+    const micDev = state.mic.deviceId && state.mic.deviceId !== 'default' ? { exact: state.mic.deviceId } : undefined;
+    const audioBase = { echoCancellation: false, noiseSuppression: false, autoGainControl: false };
+    let micStream;
+    try {
+      micStream = await navigator.mediaDevices.getUserMedia({ audio: micDev ? { deviceId: micDev, ...audioBase } : audioBase });
+    } catch (e) {
+      // le micro configuré a disparu/changé -> repli sur le micro par défaut
+      micStream = await navigator.mediaDevices.getUserMedia({ audio: audioBase });
+    }
+    loopCtx = new AudioContext();
+    loopSR = loopCtx.sampleRate;
+    const merger = loopCtx.createGain();
+    loopCtx.createMediaStreamSource(micStream).connect(merger);
+    let sysStream = null;
+    if (cfg.source === 'both') {
+      // ajoute le son du PC (loopback via getDisplayMedia, sans capture d'écran)
+      try {
+        const disp = await navigator.mediaDevices.getDisplayMedia({ audio: true, video: false });
+        disp.getVideoTracks().forEach(t => t.stop());
+        if (disp.getAudioTracks().length) {
+          sysStream = new MediaStream(disp.getAudioTracks());
+          loopCtx.createMediaStreamSource(sysStream).connect(merger);
+        }
+      } catch { /* si refusé : micro seul, pas bloquant */ }
+    }
+    loopStream = { micStream, sysStream };
+    loopSrcNode = merger;
+    // ring buffer de 6 s (> la limite du curseur à 5 s)
+    const capacity = loopSR * 6;
+    loopRing = new Float32Array(capacity);
+    loopWrite = 0; loopFilled = 0;
+    loopProc = loopCtx.createScriptProcessor(4096, 1, 1);
+    loopProc.onaudioprocess = (e) => {
+      const inp = e.inputBuffer.getChannelData(0);
+      for (let i = 0; i < inp.length; i++) {
+        loopRing[loopWrite] = inp[i];
+        loopWrite = (loopWrite + 1) % capacity;
+      }
+      loopFilled = Math.min(capacity, loopFilled + inp.length);
+    };
+    merger.connect(loopProc);
+    loopProc.connect(loopCtx.destination);
+    loopActive = true;
+    refreshLooperUI();
+  } catch (e) {
+    console.error('looper start:', e);
+    toast('❌ Looper : accès micro refusé (' + (e.name || '') + ' ' + (e.message || e) + ')');
+    loopActive = false;
+    if (cfg) { cfg.enabled = false; saveState(); }
+    refreshLooperUI();
+  }
+}
+
+function stopLooperCapture() {
+  if (loopProc) { try { loopProc.disconnect(); } catch {} loopProc.onaudioprocess = null; loopProc = null; }
+  if (loopSrcNode) { try { loopSrcNode.disconnect(); } catch {} loopSrcNode = null; }
+  if (loopStream) {
+    for (const s of [loopStream.micStream, loopStream.sysStream]) if (s) s.getTracks().forEach(t => t.stop());
+    loopStream = null;
+  }
+  if (loopCtx) { loopCtx.close().catch(() => {}); loopCtx = null; }
+  loopRing = null; loopActive = false;
+}
+
+// F1 : fige les X dernières secondes en un échantillon prêt à boucler
+function looperCapture() {
+  if (!loopActive || !loopRing) { toast('⚠️ Active d\'abord le looper (section Replay audio)'); return; }
+  const secs = looperSeconds();
+  const cap = loopRing.length;
+  const n = Math.min(loopFilled, Math.floor(secs * loopSR));
+  if (n <= 0) { toast('⏳ Le buffer se remplit…'); return; }
+  const out = new Float32Array(n);
+  const start = (loopWrite - n + cap) % cap;
+  for (let i = 0; i < n; i++) out[i] = loopRing[(start + i) % cap];
+  let peak = 0; for (let i = 0; i < n; i++) peak = Math.max(peak, Math.abs(out[i]));
+  if (peak < 0.004) { toast('⚠️ Rien capturé (silence)'); return; }
+  // fondus courts (5 ms) aux extrémités : boucle sans « clac »
+  const fade = Math.min(Math.floor(loopSR * 0.005), Math.floor(n / 2));
+  for (let i = 0; i < fade; i++) { const g = i / fade; out[i] *= g; out[n - 1 - i] *= g; }
+  if (loopSample?.url) URL.revokeObjectURL(loopSample.url);
+  const blob = new Blob([encodeWav(out, loopSR)], { type: 'audio/wav' });
+  loopSample = { url: URL.createObjectURL(blob), seconds: secs, ms: Math.round(n / loopSR * 1000) };
+  toast('🎙️ Sample capturé (' + loopSample.ms + ' ms) — ' + (state.replay.looper.toggleKey || 'F2') + ' pour boucler');
+  refreshLooperUI();
+}
+
+// Construit la liste des sorties (device sinkId) selon le réglage
+function looperOutputs() {
+  const o = state.replay.looper.output;
+  const outs = [];
+  const disc = state.discord.deviceId;
+  const mon = state.monitor.deviceId;
+  if ((o === 'both' || o === 'discord') && disc && disc !== 'default') outs.push(disc);
+  if (o === 'both' || o === 'monitor') outs.push(mon || 'default');
+  return outs;
+}
+
+function looperStopPlay() {
+  for (const a of loopEls) { try { a.pause(); a.src = ''; } catch {} }
+  loopEls = [];
+  loopPlaying = false;
+  refreshLooperUI();
+}
+
+// Lance la boucle (retrigger=true relance depuis 0 si déjà en cours)
+async function looperPlay(retrigger) {
+  if (!loopSample) { toast('⚠️ Capture d\'abord un sample (' + (state.replay.looper.captureKey || 'F1') + ')'); return; }
+  if (loopPlaying && !retrigger) return;        // toggle : déjà en cours -> ne rien faire ici
+  looperStopPlay();
+  const vol = fin(state.replay.looper.volume, 1);
+  for (const sink of looperOutputs()) {
+    const a = new Audio();
+    a.loop = true;
+    a.volume = Math.min(1, Math.max(0, vol));
+    try { if (sink && sink !== 'default') await a.setSinkId(sink); } catch {}
+    a.src = loopSample.url;
+    a.play().catch(() => {});
+    loopEls.push(a);
+  }
+  loopPlaying = loopEls.length > 0;
+  refreshLooperUI();
+}
+
+// F2 : bascule marche/arrêt de la boucle
+function looperToggle() {
+  if (loopPlaying) looperStopPlay();
+  else looperPlay(false);
+}
+
+// Router les actions venant des raccourcis globaux
+window.sb.onLooper((action) => {
+  if (action === 'capture') looperCapture();
+  else if (action === 'toggle') looperToggle();
+  else if (action === 'retrigger') looperPlay(true);
+});
+
+// Active/désactive le looper (démarre/arrête le buffer + (dé)enregistre les touches)
+async function setLooperEnabled(on) {
+  state.replay.looper.enabled = on;
+  saveState();
+  if (on) await startLooperCapture();
+  else { looperStopPlay(); stopLooperCapture(); if (loopSample?.url) { URL.revokeObjectURL(loopSample.url); loopSample = null; } }
+  await applyGlobalHotkeys();
+  refreshLooperUI();
+}
+
+function refreshLooperUI() {
+  const box = $('looperPanel'); if (!box) return;
+  const cfg = state.replay.looper;
+  $('swLooper').checked = !!cfg.enabled;
+  $('looperOpts').style.display = cfg.enabled ? 'block' : 'none';
+  const st = $('looperStatus');
+  if (st) {
+    if (!cfg.enabled) st.textContent = '';
+    else if (loopPlaying) st.innerHTML = '🔁 <b>En boucle</b> — ' + (cfg.toggleKey || 'F2') + ' pour arrêter';
+    else if (loopSample) st.innerHTML = '🎙️ Sample prêt (' + loopSample.ms + ' ms) — ' + (cfg.toggleKey || 'F2') + ' pour boucler';
+    else st.innerHTML = '🎧 En écoute — appuie sur <b>' + (cfg.captureKey || 'F1') + '</b> pour figer ce que tu viens de dire';
+  }
+}
+
+// Met à jour le libellé des 3 boutons de touches
+function refreshLooperKeys() {
+  const lp = state.replay.looper;
+  for (const [id, field] of [['lkCapture', 'captureKey'], ['lkToggle', 'toggleKey'], ['lkRetrigger', 'retriggerKey']]) {
+    const btn = $(id); if (!btn) continue;
+    const cap = capturingLooperKey === field;
+    btn.textContent = cap ? '…' : (grabKeyLabel(lp[field]) || '—');
+    btn.classList.toggle('capturing', cap);
+  }
+}
+
+// Un clic sur le switch d'une carte avancée ne doit PAS plier/déplier le <details>
+document.querySelectorAll('.adv-switch').forEach(s => s.addEventListener('click', (e) => e.stopPropagation()));
+// Activer le looper/YAMNet ouvre automatiquement sa carte
+function openAdvCard(sw) { const d = sw.closest('.adv-card'); if (d && sw.checked) d.open = true; }
+
+// Bindings du panneau looper
+$('swLooper').addEventListener('change', (e) => { openAdvCard(e.target); setLooperEnabled(e.target.checked); });
+(() => {
+  const lp = () => state.replay.looper;
+  const dur = $('looperDur'), durLbl = $('looperDurLbl');
+  dur.value = looperSeconds(); durLbl.textContent = dur.value + ' s';
+  dur.addEventListener('input', () => { durLbl.textContent = dur.value + ' s'; lp().seconds = +dur.value; saveState(); });
+  const src = $('looperSource'); src.value = lp().source;
+  src.addEventListener('change', () => { lp().source = src.value; saveState(); if (loopActive) startLooperCapture(); });
+  const out = $('looperOutput'); out.value = lp().output;
+  out.addEventListener('change', () => { lp().output = out.value; saveState(); if (loopPlaying) looperPlay(true); });
+  const vol = $('looperVol'), volLbl = $('looperVolLbl');
+  vol.value = Math.round(fin(lp().volume, 1) * 100); volLbl.textContent = vol.value + '%';
+  vol.addEventListener('input', () => {
+    volLbl.textContent = vol.value + '%'; lp().volume = vol.value / 100; saveState();
+    for (const a of loopEls) a.volume = lp().volume;
+  });
+  // boutons de réassignation de touche
+  for (const [id, field] of [['lkCapture', 'captureKey'], ['lkToggle', 'toggleKey'], ['lkRetrigger', 'retriggerKey']]) {
+    $(id).addEventListener('click', () => { capturingLooperKey = field; refreshLooperKeys(); });
+  }
+  refreshLooperKeys();
+})();
 
 /* ================== Replay VIDÉO (ShadowPlay) ================== */
 // IMPORTANT : Chromium encode TOUT l'enregistrement dans un seul cluster WebM et les
@@ -3412,11 +4100,11 @@ function refreshVideoTab() {
   const on = vidActive;
   const sw = $('swVideo'); if (sw) sw.checked = on;
   const st = $('vidState');
-  if (st) { st.textContent = on ? 'Capture active 🔴' : 'Capture inactive'; st.className = 'replay-status' + (on ? ' on' : ''); }
+  if (st) { st.textContent = on ? 'Capture active 🔴' : 'Capture inactive'; st.className = 'cap-state' + (on ? ' on' : ''); }
   const grab = $('vidGrab');
   if (grab) {
     grab.disabled = !on;
-    grab.querySelector('.replay-grab-txt').textContent = on
+    grab.querySelector('.grab-txt').textContent = on
       ? 'Capturer les ' + vidSelectedSeconds() + ' dernières secondes'
       : 'Active la capture d\'abord';
   }
@@ -3475,8 +4163,16 @@ function requestVideoThumb(clip, el) {
   }).catch(() => {}));
 }
 
+let vidRepairDone = false;   // réparation des clips existants : une fois par session
 async function loadVideoClips() {
   const box = $('vidList'); if (!box) return;
+  // réparation unique : ajoute la durée manquante aux anciens clips (seek VLC)
+  if (!vidRepairDone) {
+    vidRepairDone = true;
+    window.sb.repairVideoClips().then((r) => {
+      if (r && r.ok && r.fixed > 0) { toast('🔧 ' + r.fixed + ' clip(s) vidéo réparé(s) (durée/seek)'); loadVideoClips(); }
+    }).catch(() => {});
+  }
   const clips = await window.sb.listVideoClips();
   $('vidCount').textContent = clips.length;
   if (!clips.length) {
@@ -3624,6 +4320,11 @@ $('btnOverlay').addEventListener('click', () => window.sb.overlay.toggle());
 
 /* ================== Démarrage ================== */
 (async function init() {
+  await refreshProfiles();        // charge la liste des profils + le profil actif
+  await hydrateStateFromDisk();   // fichier state.json = source de vérité (anti-perte d'icônes)
+  // ré-applique les réglages visuels initialisés au top-level avant l'hydratation
+  try { applyTheme(); } catch {}
+  try { applyViewBtn(); } catch {}
   info = await window.sb.getInfo();
   $('dirPath').textContent = info.soundsDir;
   $('versionLbl').textContent = 'Soundboard Discord v' + info.version;
@@ -3641,6 +4342,7 @@ $('btnOverlay').addEventListener('click', () => window.sb.overlay.toggle());
   renderOnboard();      // checklist premier lancement (se cache une fois complétée)
   if (state.replay.auto) startReplay();   // ShadowPlay audio : le ring tourne dès l'ouverture
   if (state.replay.video && state.replay.video.auto) startVideoReplay();   // ShadowPlay vidéo
+  if (state.replay.looper && state.replay.looper.enabled) startLooperCapture();   // live looper prêt dès le lancement
 
   // Au démarrage : si le câble audio est absent, propose l'assistant d'installation.
   // (Windows uniquement ; on ne redemande pas si l'utilisateur a choisi « Plus tard ».)

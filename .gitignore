@@ -1,5 +1,6 @@
 # Dépendances (réinstallables avec « npm install ») — jamais versionnées
 _app/node_modules/
+_app/node_modules/.cache/
 
 # Sortie de build electron-builder (volumineuse, régénérable avec « npm run dist »)
 _app/dist/
@@ -10,8 +11,12 @@ Thumbs.db
 Desktop.ini
 *.log
 
-# Réglages locaux de l'utilisateur (chemins machine-spécifiques)
-_app/node_modules/.cache/
+# État & profils locaux de l'utilisateur (machine-spécifiques, jamais partagés)
+state.json
+state.json.bak
+/_profils/
+/_backup-avant-profils/
+/_icones/
 
 # Backend Voix IA : environnement Python (plusieurs Go, réinstallable via setup.ps1)
 _app/ia/.venv310/
@@ -21,6 +26,9 @@ _app/ia/_*.txt
 
 # Modèles de voix IA (volumineux : .pth + .index) — restent en local
 Voix IA/
+
+# Ancien exécutable buildé (régénérable)
+Soundboard Discord.exe
 
 # Bibliothèque de sons personnelle (perso, non partagée) — le dépôt ne suit que le CODE.
 # On ignore les fichiers audio À LA RACINE et dans les catégories (sous-dossiers de
@@ -41,7 +49,11 @@ Voix IA/
 /*/*.aac
 /*/*.flac
 /*/*.webm
-/_icones/
+/*.jpg
+/*.jpeg
+/*.png
+/*.gif
+/_Enregistrements/
 /Enregistrements/
 /clips-video/
-
+/_Clips vidéo/
