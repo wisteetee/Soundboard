@@ -950,10 +950,30 @@ if (!app.requestSingleInstanceLock()) {
 }
 
 /* ---------- Fenêtre & tray ---------- */
+// Restaure la géométrie mémorisée, mais seulement si elle reste visible sur un
+// écran actuellement branché (sinon la fenêtre réapparaîtrait hors de l'écran
+// après avoir débranché un second moniteur).
+function savedWindowBounds() {
+  const b = config.winBounds;
+  if (!b || !Number.isFinite(b.x) || !Number.isFinite(b.y)) return null;
+  try {
+    const { screen } = require('electron');
+    const visible = screen.getAllDisplays().some((d) => {
+      const w = d.workArea;
+      return b.x < w.x + w.width && b.x + (b.width || 0) > w.x
+          && b.y < w.y + w.height && b.y + (b.height || 0) > w.y;
+    });
+    if (!visible) return null;
+  } catch { return null; }
+  return b;
+}
+
 function createWindow() {
+  const saved = savedWindowBounds();
   win = new BrowserWindow({
-    width: 1120,
-    height: 740,
+    width: (saved && saved.width) || 1120,
+    height: (saved && saved.height) || 740,
+    ...(saved ? { x: saved.x, y: saved.y } : {}),
     minWidth: 760,
     minHeight: 480,
     backgroundColor: '#313338',
@@ -969,7 +989,30 @@ function createWindow() {
   });
   win.setMenuBarVisibility(false);
   win.loadFile(path.join(__dirname, 'renderer', 'index.html'));
-  win.once('ready-to-show', () => win.show());
+  win.once('ready-to-show', () => {
+    if (saved && saved.maximized) win.maximize();
+    win.show();
+  });
+
+  // Mémorise la géométrie. `now` = écriture immédiate (à la fermeture, où un
+  // debounce n'aurait pas le temps de se déclencher avant la fin du process).
+  const captureBounds = () => {
+    if (!win || win.isDestroyed() || win.isMinimized()) return;
+    const maximized = win.isMaximized();
+    // en maximisé, getBounds() renvoie la taille plein écran : on garde la
+    // géométrie « normale » pour pouvoir restaurer une fenêtre utilisable.
+    const b = maximized ? win.getNormalBounds() : win.getBounds();
+    config.winBounds = { x: b.x, y: b.y, width: b.width, height: b.height, maximized };
+    saveConfig();
+  };
+  const saveBounds = debounce(captureBounds, 400);
+  win.on('resize', saveBounds);
+  win.on('move', saveBounds);
+  win.on('maximize', saveBounds);
+  win.on('unmaximize', saveBounds);
+  // filet : mémorise aussi à la fermeture/masquage, même si rien n'a bougé
+  win.on('close', captureBounds);
+  win.on('hide', captureBounds);
 
   // les liens externes (target=_blank) s'ouvrent dans le navigateur système,
   // pas dans une fenêtre Electron nue.
@@ -1011,6 +1054,41 @@ function createTray() {
     { label: 'Quitter', click: () => { app.isQuitting = true; app.quit(); } },
   ]));
 }
+
+/* ---------- Sauvegarde automatique de la configuration ----------
+   Une seule sauvegarde, écrasée à chaque fois. On ne copie QUE les réglages
+   (state.json du profil + config.json) : les fichiers audio sont déjà sur le
+   disque, les dupliquer à chaque fermeture serait inutilement lourd.
+   Écriture atomique (tmp + rename) pour ne jamais laisser un backup à moitié écrit. */
+function backupDir() {
+  const d = path.join(app.getPath('userData'), 'backup');
+  try { fs.mkdirSync(d, { recursive: true }); } catch {}
+  return d;
+}
+function autoBackupConfig() {
+  try {
+    const dir = backupDir();
+    const copy = (src, name) => {
+      if (!fs.existsSync(src)) return false;
+      const tmp = path.join(dir, '~' + name);
+      fs.copyFileSync(src, tmp);
+      fs.rmSync(path.join(dir, name), { force: true });
+      fs.renameSync(tmp, path.join(dir, name));
+      return true;
+    };
+    const okState = copy(statePath(), 'state.json');
+    const okConfig = copy(configPath(), 'config.json');
+    fs.writeFileSync(path.join(dir, 'info.txt'),
+      'Sauvegarde automatique des réglages du Soundboard\r\n'
+      + 'Date : ' + new Date().toLocaleString() + '\r\n\r\n'
+      + 'Pour restaurer : ferme l\'application, puis recopie state.json dans le\r\n'
+      + 'dossier de sons du profil, et config.json dans :\r\n'
+      + app.getPath('userData') + '\r\n');
+    return { ok: true, state: okState, config: okConfig, dir };
+  } catch (e) { return { error: String(e.message || e) }; }
+}
+ipcMain.handle('backup-now', () => autoBackupConfig());
+ipcMain.handle('open-backup-folder', () => { shell.openPath(backupDir()); return { ok: true }; });
 
 /* ---------- IPC ---------- */
 ipcMain.handle('list-sounds', () => listSounds());
@@ -1942,6 +2020,6 @@ app.whenReady().then(() => {
   watchSounds();
 });
 
-app.on('before-quit', () => { app.isQuitting = true; stopIaBackend(); stopVcclient(); });
+app.on('before-quit', () => { app.isQuitting = true; autoBackupConfig(); stopIaBackend(); stopVcclient(); });
 app.on('will-quit', () => { globalShortcut.unregisterAll(); stopIaBackend(); stopVcclient(); });
 app.on('window-all-closed', () => app.quit());

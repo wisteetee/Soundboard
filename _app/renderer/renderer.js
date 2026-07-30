@@ -44,6 +44,8 @@ const DEFAULTS = {
             video: { audio: 'system', seconds: 30, quality: '1080', auto: false } },
   theme: 'discord', // thème de couleur (voir THEMES)
   bg: 'none',       // fond d'écran décoratif (voir BACKGROUNDS)
+  zen: false,       // mode zen : interface masquée pour maximiser la grille
+  hoverPreview: false,   // pré-écoute au survol (casque uniquement, jamais Discord)
   showWaveforms: false, // afficher une mini forme d'onde sur les tuiles
   waveforms: {},    // cache des pics par fichier (calculé une fois) : { file: [0..1, …] }
   normalizeImport: false, // normaliser le volume des sons à l'import (loudnorm)
@@ -1154,6 +1156,9 @@ function tileFor(s) {
     showVolBadge(t, s.file);
   }, { passive: false });
   t.addEventListener('contextmenu', (e) => { e.preventDefault(); openCtx(e, s); });
+  // Pré-écoute au survol (option) : casque uniquement, jamais vers Discord.
+  t.addEventListener('mouseenter', () => hoverPreviewStart(s));
+  t.addEventListener('mouseleave', hoverPreviewStop);
   // Glisser-déposer vers une autre catégorie
   t.draggable = true;
   t.addEventListener('dragstart', (e) => {
@@ -1537,6 +1542,39 @@ function toggleFav(s) {
   if (i >= 0) state.favs.splice(i, 1); else state.favs.push(s.file);
   saveState();
   render();
+}
+
+/* ===== Pré-écoute au survol (option) =====
+   Joue le son UNIQUEMENT dans le casque après un court délai de survol. Jamais
+   envoyé à Discord : c'est fait pour retrouver un son sans le diffuser. */
+let hoverTimer = null, hoverAudio = null;
+function hoverPreviewStop() {
+  if (hoverTimer) { clearTimeout(hoverTimer); hoverTimer = null; }
+  if (hoverAudio) {
+    const a = hoverAudio; hoverAudio = null;
+    // petit fondu pour éviter le « clac » quand on quitte la tuile
+    const step = Math.max(0.04, a.volume / 5);
+    const t = setInterval(() => {
+      if (a.volume > step) a.volume -= step;
+      else { clearInterval(t); a.pause(); a.src = ''; }
+    }, 25);
+  }
+}
+function hoverPreviewStart(s) {
+  if (!state.hoverPreview || !s) return;
+  hoverPreviewStop();
+  hoverTimer = setTimeout(async () => {
+    hoverTimer = null;
+    try {
+      const a = new Audio();
+      a.volume = Math.min(1, Math.max(0.05, fin(state.monitor.volume, 0.5) * 0.7));
+      const sink = state.monitor.deviceId;
+      if (sink && sink !== 'default') { try { await a.setSinkId(sink); } catch {} }
+      a.src = window.sb.soundUrl(s.file);
+      hoverAudio = a;
+      await a.play();
+    } catch { hoverAudio = null; }
+  }, 600);   // délai : évite de déclencher en balayant la grille
 }
 
 // Marque / démarque un son comme « fort » : il sera joué atténué (loudFactor).
@@ -2161,13 +2199,17 @@ document.addEventListener('keydown', (e) => {
     return;
   }
 
+  // F11 : bascule le mode zen (même depuis un champ de saisie)
+  if (e.key === 'F11') { e.preventDefault(); setZen(!document.body.classList.contains('zen')); return; }
+
   if (['INPUT', 'SELECT', 'TEXTAREA'].includes(e.target.tagName)) {
     if (e.key === 'Escape') e.target.blur();
     return;
   }
   if (e.key === 'Escape') {
-    // priorité : fermer le lecteur vidéo, puis le tiroir des réglages
+    // priorité : lecteur vidéo, mode zen, tiroir des réglages, puis stop
     if ($('vidPlayer') && $('vidPlayer').style.display !== 'none') { closeVideoPlayer(); return; }
+    if (document.body.classList.contains('zen')) { setZen(false); return; }
     if ($('settings').classList.contains('open')) { $('settings').classList.remove('open'); return; }
     stopAll(); return;
   }
@@ -2288,6 +2330,8 @@ bindSwitch('swCut', () => state.cut, v => state.cut = v);
 bindSwitch('swNorm', () => state.normalizeImport, v => state.normalizeImport = v);
 // Forme d'onde sur les tuiles (option graphique)
 bindSwitch('swWaveforms', () => state.showWaveforms, v => { state.showWaveforms = v; render(); });
+// Pré-écoute au survol (casque uniquement)
+bindSwitch('swHoverPreview', () => state.hoverPreview, v => { state.hoverPreview = v; if (!v) hoverPreviewStop(); });
 // Atténuation appliquée aux sons marqués « fort »
 bindVol('volLoudFactor', 'volLoudFactorLbl', () => fin(state.loudFactor, 0.55),
   v => { state.loudFactor = Math.max(0.1, v); render(); });
@@ -2554,6 +2598,16 @@ $('obDiscordDone').addEventListener('click', () => {
 });
 $('btnStop').addEventListener('click', () => stopAll());
 $('btnRandom').addEventListener('click', () => { if (sounds.length) playSound(sounds[Math.floor(Math.random() * sounds.length)]); });
+
+// ----- Mode zen : masque header/rail/footer pour maximiser la grille -----
+function setZen(on) {
+  document.body.classList.toggle('zen', !!on);
+  state.zen = !!on;
+  saveState();
+  if (on) { $('settings').classList.remove('open'); toast('⛶ Mode zen — F11 ou Échap pour quitter'); }
+}
+$('btnZen').addEventListener('click', () => setZen(!document.body.classList.contains('zen')));
+$('zenExitBtn').addEventListener('click', () => setZen(false));
 $('btnNewCat').addEventListener('click', catCreate);
 
 // Recherche avec bouton ✕
@@ -3282,6 +3336,14 @@ $('btnExport').addEventListener('click', async () => {
   if (r.ok) toast('✅ Bibliothèque exportée !');
   else if (!r.canceled) toast('❌ ' + (r.error || 'Échec de l\'export'), 4000);
 });
+// Sauvegarde manuelle des réglages (la même que celle faite à la fermeture)
+$('btnBackupNow').addEventListener('click', async () => {
+  const r = await window.sb.backupNow();
+  if (r && r.ok) toast('🛟 Réglages sauvegardés');
+  else toast('❌ ' + ((r && r.error) || 'Échec de la sauvegarde'));
+});
+$('btnBackupFolder').addEventListener('click', () => window.sb.openBackupFolder());
+
 $('btnImport').addEventListener('click', async () => {
   if (!confirm('Importer une bibliothèque ?\nSes sons et icônes s\'ajouteront à la tienne (rien n\'est écrasé).')) return;
   toast('📥 Import en cours…');
@@ -4967,6 +5029,7 @@ $('btnOverlay').addEventListener('click', () => window.sb.overlay.toggle());
   // ré-applique les réglages visuels initialisés au top-level avant l'hydratation
   try { applyTheme(); } catch {}
   try { applyBackground(); } catch {}
+  try { if (state.zen) document.body.classList.add('zen'); } catch {}
   try { applyViewBtn(); } catch {}
   info = await window.sb.getInfo();
   $('dirPath').textContent = info.soundsDir;

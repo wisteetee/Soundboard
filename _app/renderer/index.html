@@ -24,9 +24,16 @@
   <button id="btnAdd" class="primary">➕ Ajouter</button>
   <button id="btnUrl" title="Importer un son depuis une URL (lien direct .mp3)">🌐</button>
   <button id="btnNewCat" title="Créer une catégorie (sous-dossier)">📁➕</button>
+  <button id="btnZen" title="Mode zen : masquer l'interface pour voir un maximum de sons (F11)">⛶</button>
   <button id="btnReplay" title="Instant replay : figer les dernières secondes en son" style="display:none">💾 Replay</button>
   <button id="btnStop" class="danger">⏹ Stop <span style="opacity:.6">(Échap)</span></button>
 </header>
+
+<!-- Barre de sortie du mode zen (discrète, visible seulement dans ce mode) -->
+<div class="zen-exit" id="zenExit">
+  <span>Mode zen</span>
+  <button id="zenExitBtn" title="Quitter le mode zen (F11 ou Échap)">⛶ Quitter</button>
+</div>
 
 <div id="cableBanner">
   ⚠️ <b>Câble audio virtuel non détecté.</b> Il permet d'envoyer tes sons et ta voix dans Discord.
@@ -743,6 +750,10 @@
         <label class="switch"><input type="checkbox" id="swNorm"><span class="sl"></span></label>
         Normaliser le volume des sons importés (même niveau sonore partout)
       </label>
+      <label class="row">
+        <label class="switch"><input type="checkbox" id="swHoverPreview"><span class="sl"></span></label>
+        🎧 Pré-écouter un son au survol (casque seulement, jamais Discord)
+      </label>
       <div class="vol" style="margin-top:10px">🔉 <input type="range" id="volLoudFactor" min="10" max="100" value="55"><span id="volLoudFactorLbl">55%</span></div>
       <div class="hint">Volume des sons marqués <b>« fort »</b> (clic droit sur un son → 🔉). Utile pour les
         sons agressifs qui restent trop forts même après normalisation.</div>
@@ -790,6 +801,12 @@
       <div style="display:flex;gap:8px;margin-top:8px;flex-wrap:wrap">
         <button class="testbtn" id="btnExport">📤 Exporter</button>
         <button class="testbtn" id="btnImport">📥 Importer</button>
+      </div>
+      <div class="hint" style="margin-top:12px">🛟 <b>Sauvegarde automatique</b> — tes réglages (favoris, raccourcis,
+        icônes, volumes, tags) sont sauvegardés à chaque fermeture. Une seule sauvegarde, toujours à jour.</div>
+      <div style="display:flex;gap:8px;margin-top:6px;flex-wrap:wrap">
+        <button class="testbtn" id="btnBackupNow">🛟 Sauvegarder maintenant</button>
+        <button class="testbtn" id="btnBackupFolder">📂 Voir la sauvegarde</button>
       </div>
     </div>
 

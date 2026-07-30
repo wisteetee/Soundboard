@@ -20,6 +20,8 @@ contextBridge.exposeInMainWorld('sb', {
   importFiles: (paths) => ipcRenderer.invoke('import-files', paths),
   importUrl: (url) => ipcRenderer.invoke('import-url', url),
   exportConfig: (manifest) => ipcRenderer.invoke('export-config', manifest),
+  backupNow: () => ipcRenderer.invoke('backup-now'),
+  openBackupFolder: () => ipcRenderer.invoke('open-backup-folder'),
   importConfig: () => ipcRenderer.invoke('import-config'),
   saveClip: (wavBuffer, name) => ipcRenderer.invoke('save-clip', wavBuffer, name),
   // Clips vidéo (replay ShadowPlay)
