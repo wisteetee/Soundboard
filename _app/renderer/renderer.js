@@ -61,6 +61,7 @@ let draggingSound = null;    // fichier en cours de glisser-déposer interne
 let playsOrder = null;       // Map<file, rang> figée ; null = à reconstruire
 let topPlayedSnapshot = null; // fichiers de « 🔥 Les plus joués » figés au même titre
 let lastOutDevices = [];     // dernière liste de sorties (pour le test de retour casque)
+const selected = new Set();  // sélection multiple de sons (Ctrl+clic) -> actions groupées
 let devices = { out: [], in: [] };
 let active = new Map();      // Audio -> file
 const durations = new Map(); // file -> secondes
@@ -1141,8 +1142,17 @@ function tileFor(s) {
   wireIconFallback(t);
   updateVolBar(t, s.file);   // jauge de volume verticale (masquée si 100%)
   if (state.showWaveforms) ensureWaveform(s.file, t);   // passe la tuile (peut être hors DOM)
+  if (selected.has(s.file)) t.classList.add('sel-multi');
   t.addEventListener('click', (e) => {
     if (e.target.classList.contains('star')) { toggleFav(s); return; }
+    // Ctrl+clic = (dé)sélectionner pour les actions groupées, sans jouer le son
+    if (e.ctrlKey || e.metaKey) {
+      e.preventDefault();
+      if (selected.has(s.file)) { selected.delete(s.file); t.classList.remove('sel-multi'); }
+      else { selected.add(s.file); t.classList.add('sel-multi'); }
+      refreshSelectionBar();
+      return;
+    }
     if (e.shiftKey) { playSound(s, { localOnly: true }); return; }  // écoute privée
     playSound(s);
   });
@@ -1535,13 +1545,148 @@ function render() {
   }
   c.appendChild(frag);   // attache toutes les sections d'un coup
   updatePlaying();
+  // la sélection multiple survit au re-render (les tuiles viennent d'être recréées)
+  selected.forEach(f => { if (!sounds.some(s => s.file === f)) selected.delete(f); });
+  refreshSelectionBar();
 }
 
 function toggleFav(s) {
   const i = state.favs.indexOf(s.file);
-  if (i >= 0) state.favs.splice(i, 1); else state.favs.push(s.file);
+  const wasFav = i >= 0;
+  if (wasFav) state.favs.splice(i, 1); else state.favs.push(s.file);
   saveState();
   render();
+  pushUndo(wasFav ? 'retrait des favoris' : 'ajout aux favoris', () => {
+    const j = state.favs.indexOf(s.file);
+    if (wasFav && j < 0) state.favs.push(s.file);
+    else if (!wasFav && j >= 0) state.favs.splice(j, 1);
+    saveState(); render();
+  });
+}
+
+/* ===== Annulation (Ctrl+Z) =====
+   Pile des dernières actions réversibles. On n'enregistre QUE ce qu'on sait
+   annuler de façon fiable : favoris, tag « fort », volume, raccourcis et
+   suppressions (le fichier est en corbeille, donc récupérable).
+   Les opérations qui réécrivent un fichier (découpe, normalisation) ne sont
+   volontairement PAS annulables : l'original est écrasé. */
+const undoStack = [];
+const UNDO_MAX = 30;
+
+function pushUndo(label, undoFn) {
+  undoStack.push({ label, undoFn });
+  if (undoStack.length > UNDO_MAX) undoStack.shift();
+}
+
+async function undoLast() {
+  const a = undoStack.pop();
+  if (!a) { toast('↩️ Rien à annuler'); return; }
+  try {
+    await a.undoFn();
+    toast('↩️ Annulé : ' + a.label);
+  } catch (e) {
+    toast('❌ Impossible d\'annuler : ' + (e.message || e));
+  }
+}
+
+/* ===== Sélection multiple : barre d'actions groupées ===== */
+function selectedSounds() {
+  return sounds.filter(s => selected.has(s.file));
+}
+function clearSelection() {
+  selected.clear();
+  document.querySelectorAll('.tile.sel-multi').forEach(t => t.classList.remove('sel-multi'));
+  refreshSelectionBar();
+}
+function refreshSelectionBar() {
+  const bar = $('selBar'); if (!bar) return;
+  const n = selected.size;
+  bar.classList.toggle('show', n > 0);
+  const lbl = $('selBarCount');
+  if (lbl) lbl.textContent = n + ' son' + (n > 1 ? 's' : '') + ' sélectionné' + (n > 1 ? 's' : '');
+}
+(function initSelectionBar() {
+  if (!$('selBar')) return;
+  $('selClear').addEventListener('click', clearSelection);
+
+  $('selNormalize').addEventListener('click', async () => {
+    const files = [...selected];
+    if (!files.length) return;
+    if (!confirm('Normaliser le volume de ' + files.length + ' son(s) ?\nLes fichiers seront modifiés.')) return;
+    await normalizeSounds(files, { progress: true });
+    clearSelection();
+  });
+  $('selLoud').addEventListener('click', () => {
+    state.loud = state.loud || {};
+    for (const f of selected) state.loud[f] = true;
+    saveState(); render(); refreshSelectionBar();
+    toast('🔉 ' + selected.size + ' son(s) marqué(s) « fort »');
+  });
+  $('selUnloud').addEventListener('click', () => {
+    for (const f of selected) delete state.loud[f];
+    saveState(); render(); refreshSelectionBar();
+    toast('🔊 Marquage « fort » retiré');
+  });
+  $('selFav').addEventListener('click', () => {
+    // si tous sont déjà favoris -> on retire, sinon on ajoute
+    const all = [...selected].every(f => state.favs.includes(f));
+    for (const f of selected) {
+      const i = state.favs.indexOf(f);
+      if (all && i >= 0) state.favs.splice(i, 1);
+      else if (!all && i < 0) state.favs.push(f);
+    }
+    saveState(); render(); refreshSelectionBar();
+    toast(all ? '💔 Retirés des favoris' : '⭐ Ajoutés aux favoris');
+  });
+  $('selMove').addEventListener('click', async () => {
+    const files = [...selected];
+    if (!files.length) return;
+    const dest = await askFolder();
+    if (dest === null) return;
+    let ok = 0;
+    for (const f of files) {
+      const r = await window.sb.moveSound(f, dest);
+      if (r.ok) { remapFile(f, r.file); ok++; }
+    }
+    clearSelection();
+    await loadSounds();
+    toast('📁 ' + ok + ' son(s) déplacé(s) vers « ' + (dest || 'Général') + ' »');
+  });
+  $('selDelete').addEventListener('click', async () => {
+    const files = [...selected];
+    if (!files.length) return;
+    if (!confirm('Supprimer ' + files.length + ' son(s) ?\nIls partent dans la corbeille (_corbeille), rien n\'est perdu.')) return;
+    let ok = 0;
+    const restorable = [];
+    for (const f of files) {
+      const r = await window.sb.remove(f);
+      if (r.ok) { ok++; if (r.trashed) restorable.push({ trashed: r.trashed, file: f }); }
+    }
+    clearSelection();
+    await loadSounds();
+    toast('🗑️ ' + ok + ' son(s) dans la corbeille (Ctrl+Z pour annuler)');
+    if (restorable.length) pushUndo('suppression de ' + restorable.length + ' son(s)', async () => {
+      for (const it of restorable) await window.sb.restoreFromTrash(it.trashed, it.file);
+      await loadSounds();
+    });
+  });
+})();
+
+// Petit sélecteur de catégorie (réutilise la liste des dossiers existants)
+async function askFolder() {
+  const opts = ['', ...folders];
+  const labels = opts.map(f => f || '📁 Général');
+  const choice = await askText({
+    title: '📁 Déplacer vers…',
+    sub: 'Catégories : ' + labels.join(' · ') + '  (laisser vide = Général)',
+    value: '',
+  });
+  if (choice === null) return null;
+  const v = choice.trim();
+  if (!v) return '';
+  // tolère une casse différente / un nom approchant
+  const match = folders.find(f => norm(f) === norm(v));
+  return match || v;
 }
 
 /* ===== Pré-écoute au survol (option) =====
@@ -1580,10 +1725,15 @@ function hoverPreviewStart(s) {
 // Marque / démarque un son comme « fort » : il sera joué atténué (loudFactor).
 function toggleLoud(file) {
   state.loud = state.loud || {};
-  if (state.loud[file]) { delete state.loud[file]; toast('🔊 Son remis à volume normal'); }
+  const was = !!state.loud[file];
+  if (was) { delete state.loud[file]; toast('🔊 Son remis à volume normal'); }
   else { state.loud[file] = true; toast('🔉 Son marqué « fort » — joué à ' + Math.round(fin(state.loudFactor, 0.55) * 100) + '%'); }
   saveState();
   render();
+  pushUndo(was ? 'retrait du marquage « fort »' : 'marquage « fort »', () => {
+    if (was) state.loud[file] = true; else delete state.loud[file];
+    saveState(); render();
+  });
 }
 
 /* ================== Menu contextuel ================== */
@@ -1642,11 +1792,18 @@ $('ctx').addEventListener('click', async (e) => {
   }
   if (act === 'del') {
     if (confirm('Supprimer « ' + s.name + ' » ?\n(Le fichier sera déplacé dans le dossier _corbeille)')) {
-      const r = await window.sb.remove(s.file);
+      const file = s.file;
+      const r = await window.sb.remove(file);
       if (r.ok) {
-        const ic = state.icons[s.file];
-        if (ic) { if (ic.image) window.sb.removeIcon(ic.image); delete state.icons[s.file]; saveState(); }
-        toast('🗑️ Déplacé dans _corbeille'); await loadSounds();
+        const ic = state.icons[file];
+        if (ic) { if (ic.image) window.sb.removeIcon(ic.image); delete state.icons[file]; saveState(); }
+        toast('🗑️ Déplacé dans _corbeille (Ctrl+Z pour annuler)'); await loadSounds();
+        // annulable : le fichier est en corbeille, on sait où le remettre
+        if (r.trashed) pushUndo('suppression de « ' + s.name + ' »', async () => {
+          const rr = await window.sb.restoreFromTrash(r.trashed, file);
+          if (rr && rr.ok) { if (ic) { state.icons[rr.file] = ic; saveState(); } await loadSounds(); }
+          else throw new Error((rr && rr.error) || 'restauration impossible');
+        });
       } else toast('❌ ' + (r.error || 'Erreur'));
     }
   }
@@ -2204,11 +2361,16 @@ document.addEventListener('keydown', (e) => {
 
   if (['INPUT', 'SELECT', 'TEXTAREA'].includes(e.target.tagName)) {
     if (e.key === 'Escape') e.target.blur();
-    return;
+    return;   // dans un champ, Ctrl+Z reste l'annulation de saisie du navigateur
+  }
+  // Ctrl+Z : annule la dernière action réversible (favori, tag, suppression…)
+  if ((e.ctrlKey || e.metaKey) && !e.shiftKey && (e.key === 'z' || e.key === 'Z')) {
+    e.preventDefault(); undoLast(); return;
   }
   if (e.key === 'Escape') {
-    // priorité : lecteur vidéo, mode zen, tiroir des réglages, puis stop
+    // priorité : lecteur vidéo, sélection multiple, mode zen, réglages, puis stop
     if ($('vidPlayer') && $('vidPlayer').style.display !== 'none') { closeVideoPlayer(); return; }
+    if (selected.size) { clearSelection(); return; }
     if (document.body.classList.contains('zen')) { setZen(false); return; }
     if ($('settings').classList.contains('open')) { $('settings').classList.remove('open'); return; }
     stopAll(); return;
@@ -2931,11 +3093,99 @@ function switchTab(tab) {
   if (tab === 'voice') { renderVoice(); renderCustomVoices(); updateVoiceStatus(); refreshIaSection(); }
   if (tab === 'replay') { refreshReplayTab(); setReplayMode(state.replay.mode || 'audio'); refreshLooperUI(); refreshLooperKeys(); renderYamActions(); }
   if (tab === 'tts') { renderTtsHistory(); refreshTtsAi(); $('ttsText').focus(); }
-  if (tab === 'guide') { renderGuideKeys(); renderStats(); }
+  if (tab === 'guide') { renderGuideKeys(); renderStats(); renderHealth(); }
 }
 
 // Statistiques d'usage (onglet Guide) : exploite state.plays, déjà tenu à jour à
 // chaque lecture (playSound). Purement dérivé — aucune donnée dédiée à maintenir.
+/* ===== Santé de la bibliothèque : références orphelines + doublons ===== */
+// Analyse purement locale (aucune écriture) : compare l'état persisté à la liste
+// réelle des fichiers. Renvoie un rapport que l'UI affiche avec des actions.
+function scanLibraryHealth() {
+  const existing = new Set(sounds.map(s => s.file));
+
+  // 1) Références qui pointent vers un fichier disparu (renommé/supprimé hors app)
+  const orphanKeys = Object.entries(state.hotkeys || {})
+    .filter(([, f]) => !existing.has(f))
+    .map(([acc, f]) => ({ acc, file: f }));
+  const orphanFavs = (state.favs || []).filter(f => !existing.has(f));
+  const orphanIcons = Object.keys(state.icons || {}).filter(f => !existing.has(f));
+  const orphanLoud = Object.keys(state.loud || {}).filter(f => !existing.has(f));
+  const orphanVolumes = Object.keys(state.volumes || {}).filter(f => !existing.has(f));
+
+  // 2) Doublons : même taille exacte ET même durée si connue -> quasi certainement
+  //    le même son importé deux fois. On regroupe par taille (info toujours dispo).
+  const bySize = new Map();
+  for (const s of sounds) {
+    if (!s.size) continue;
+    if (!bySize.has(s.size)) bySize.set(s.size, []);
+    bySize.get(s.size).push(s);
+  }
+  const dupGroups = [...bySize.values()].filter(g => g.length > 1);
+
+  // 3) Noms identiques dans des catégories différentes (doublon probable)
+  const byName = new Map();
+  for (const s of sounds) {
+    const k = norm(s.name);
+    if (!byName.has(k)) byName.set(k, []);
+    byName.get(k).push(s);
+  }
+  const sameName = [...byName.values()].filter(g => g.length > 1);
+
+  return { orphanKeys, orphanFavs, orphanIcons, orphanLoud, orphanVolumes, dupGroups, sameName };
+}
+
+// Nettoie les références orphelines (ne touche à AUCUN fichier audio)
+function cleanOrphans(rep) {
+  let n = 0;
+  for (const { acc } of rep.orphanKeys) { delete state.hotkeys[acc]; n++; }
+  for (const f of rep.orphanFavs) { const i = state.favs.indexOf(f); if (i >= 0) { state.favs.splice(i, 1); n++; } }
+  for (const f of rep.orphanIcons) { delete state.icons[f]; n++; }
+  for (const f of rep.orphanLoud) { delete state.loud[f]; n++; }
+  for (const f of rep.orphanVolumes) { delete state.volumes[f]; n++; }
+  saveState();
+  applyGlobalHotkeys();
+  render();
+  return n;
+}
+
+function renderHealth() {
+  const box = $('healthBox'); if (!box) return;
+  const rep = scanLibraryHealth();
+  const orphanCount = rep.orphanKeys.length + rep.orphanFavs.length + rep.orphanIcons.length
+    + rep.orphanLoud.length + rep.orphanVolumes.length;
+  const dupCount = rep.dupGroups.reduce((n, g) => n + g.length - 1, 0);
+  const nameCount = rep.sameName.reduce((n, g) => n + g.length - 1, 0);
+
+  const parts = [];
+  if (!orphanCount && !dupCount && !nameCount) {
+    box.innerHTML = '<div class="hint">✅ Bibliothèque saine : aucune référence cassée, aucun doublon détecté.</div>';
+    return;
+  }
+  if (orphanCount) {
+    parts.push('<div class="health-row"><span>🔗 <b>' + orphanCount + '</b> réglage(s) pointant vers un fichier disparu'
+      + (rep.orphanKeys.length ? ' (dont ' + rep.orphanKeys.length + ' raccourci(s))' : '')
+      + '</span><button class="testbtn" id="healthClean">🧹 Nettoyer</button></div>');
+  }
+  if (dupCount) {
+    const ex = rep.dupGroups.slice(0, 3).map(g => g.map(s => esc(s.name)).join(' = ')).join('<br>');
+    parts.push('<div class="health-row"><span>📄 <b>' + dupCount + '</b> doublon(s) probable(s) <span class="hint">(taille identique)</span><br>'
+      + '<span class="hint">' + ex + (rep.dupGroups.length > 3 ? '<br>…' : '') + '</span></span></div>');
+  }
+  if (nameCount) {
+    const ex = rep.sameName.slice(0, 3).map(g => esc(g[0].name) + ' ×' + g.length).join(', ');
+    parts.push('<div class="health-row"><span>🏷️ <b>' + nameCount + '</b> son(s) de même nom dans plusieurs catégories<br>'
+      + '<span class="hint">' + ex + '</span></span></div>');
+  }
+  box.innerHTML = parts.join('');
+  const btn = $('healthClean');
+  if (btn) btn.addEventListener('click', () => {
+    const n = cleanOrphans(rep);
+    toast('🧹 ' + n + ' référence(s) nettoyée(s)');
+    renderHealth();
+  });
+}
+
 function renderStats() {
   const row = $('statsRow'), top = $('statsTop');
   if (!row || !top) return;

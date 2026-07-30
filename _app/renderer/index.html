@@ -35,6 +35,19 @@
   <button id="zenExitBtn" title="Quitter le mode zen (F11 ou Échap)">⛶ Quitter</button>
 </div>
 
+<!-- Actions groupées : apparaît dès qu'au moins un son est sélectionné (Ctrl+clic) -->
+<div class="selbar" id="selBar">
+  <span class="selbar-count" id="selBarCount">0 son</span>
+  <button class="testbtn" id="selNormalize">📊 Normaliser</button>
+  <button class="testbtn" id="selLoud">🔉 Marquer « fort »</button>
+  <button class="testbtn" id="selUnloud">🔊 Retirer « fort »</button>
+  <button class="testbtn" id="selFav">⭐ Favoris</button>
+  <button class="testbtn" id="selMove">📁 Déplacer…</button>
+  <button class="testbtn danger" id="selDelete">🗑️ Supprimer</button>
+  <span style="flex:1"></span>
+  <button class="testbtn" id="selClear">✕ Désélectionner</button>
+</div>
+
 <div id="cableBanner">
   ⚠️ <b>Câble audio virtuel non détecté.</b> Il permet d'envoyer tes sons et ta voix dans Discord.
   <button class="testbtn" id="bannerInstall" style="margin:0 6px">⚡ Installer en 1 clic</button>
@@ -581,6 +594,8 @@
         <div class="stats-row" id="statsRow"></div>
         <div class="hint" style="margin:10px 0 6px">🔥 Tes sons les plus joués</div>
         <div id="statsTop"></div>
+        <div class="hint" style="margin:14px 0 6px">🩺 Santé de la bibliothèque</div>
+        <div id="healthBox"></div>
       </div>
 
       <div class="guide-grid">

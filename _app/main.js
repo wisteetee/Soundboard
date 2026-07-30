@@ -1590,9 +1590,29 @@ ipcMain.handle('remove', (_e, file) => {
   try {
     fs.mkdirSync(trash, { recursive: true });
     const ext = path.extname(full);
-    fs.renameSync(full, uniquePath(trash, path.basename(full, ext), ext));
+    const dest = uniquePath(trash, path.basename(full, ext), ext);
+    fs.renameSync(full, dest);
+    // renvoie le nom dans la corbeille : permet d'annuler la suppression (Ctrl+Z)
+    return { ok: true, trashed: path.basename(dest) };
   } catch (e) { return { error: e.message }; }
-  return { ok: true };
+});
+
+// Restaure un fichier depuis _corbeille vers son emplacement d'origine (annulation)
+ipcMain.handle('restore-from-trash', (_e, trashedName, targetFile) => {
+  try {
+    const trash = path.join(soundsDir(), '_corbeille');
+    const src = path.join(trash, path.basename(trashedName || ''));
+    if (!src.startsWith(trash + path.sep) || !fs.existsSync(src)) return { error: 'Introuvable dans la corbeille' };
+    const dest = safeJoin(targetFile || '');
+    if (!dest) return { error: 'Destination invalide' };
+    fs.mkdirSync(path.dirname(dest), { recursive: true });
+    const ext = path.extname(dest);
+    const finalDest = fs.existsSync(dest)
+      ? uniquePath(path.dirname(dest), path.basename(dest, ext), ext)
+      : dest;
+    fs.renameSync(src, finalDest);
+    return { ok: true, file: path.relative(soundsDir(), finalDest).split(path.sep).join('/') };
+  } catch (e) { return { error: String(e.message || e) }; }
 });
 
 /* ---------- Catégories (sous-dossiers du dossier des sons) ---------- */

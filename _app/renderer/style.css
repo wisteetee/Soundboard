@@ -468,6 +468,32 @@ section.cat.drop-over {
   background: linear-gradient(90deg, var(--green), #7dd490);
   transition: width .18s linear;
 }
+/* ===== Sélection multiple (Ctrl+clic) + barre d'actions groupées ===== */
+.tile.sel-multi {
+  border-color: var(--blurple);
+  box-shadow: 0 0 0 2px var(--blurple), 0 4px 14px rgba(0,0,0,.35);
+}
+.tile.sel-multi::after {
+  content: "✓"; position: absolute; top: 6px; right: 8px;
+  width: 18px; height: 18px; border-radius: 50%;
+  background: var(--blurple); color: #fff;
+  font-size: 12px; font-weight: 700;
+  display: flex; align-items: center; justify-content: center;
+}
+.selbar {
+  display: none;
+  position: fixed; left: 50%; transform: translateX(-50%);
+  bottom: 46px; z-index: 55;
+  align-items: center; gap: 6px; flex-wrap: wrap;
+  max-width: min(920px, 94vw);
+  background: var(--panel); border: 1px solid var(--border);
+  border-radius: 12px; padding: 8px 12px;
+  box-shadow: 0 8px 28px rgba(0,0,0,.45);
+}
+.selbar.show { display: flex; }
+.selbar-count { font-size: 12.5px; font-weight: 700; margin-right: 4px; white-space: nowrap; }
+.selbar .danger:hover { background: var(--red); border-color: transparent; }
+
 /* badge « son fort » (joué atténué) */
 .tile .loud-badge {
   position: absolute; top: 6px; left: 26px;
@@ -911,6 +937,13 @@ aside h2 {
 .stat-rank-bar { flex: 1; height: 6px; background: var(--bg-dark); border-radius: 3px; overflow: hidden; }
 .stat-rank-bar i { display: block; height: 100%; background: linear-gradient(90deg, var(--blurple), #7d85f5); }
 .stat-rank-count { flex: 0 0 34px; text-align: right; color: var(--text-dim); }
+/* Santé de la bibliothèque */
+.health-row {
+  display: flex; align-items: center; justify-content: space-between; gap: 10px;
+  background: var(--bg-dark); border-radius: 8px; padding: 9px 11px;
+  font-size: 12.5px; margin-bottom: 6px;
+}
+.health-row .hint { margin: 2px 0 0; }
 .gk {
   display: flex; gap: 10px; align-items: baseline;
   font-size: 12.5px; color: var(--text);

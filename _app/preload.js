@@ -35,6 +35,7 @@ contextBridge.exposeInMainWorld('sb', {
   videoUrl: (file) => 'vid://clips/' + encodeURIComponent(file),
   rename: (file, newName) => ipcRenderer.invoke('rename', file, newName),
   remove: (file) => ipcRenderer.invoke('remove', file),
+  restoreFromTrash: (trashedName, targetFile) => ipcRenderer.invoke('restore-from-trash', trashedName, targetFile),
   // Catégories (sous-dossiers)
   listFolders: () => ipcRenderer.invoke('list-folders'),
   createFolder: (name) => ipcRenderer.invoke('create-folder', name),
