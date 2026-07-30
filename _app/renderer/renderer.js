@@ -16,6 +16,8 @@ const DEFAULTS = {
            custom: [] },                  // voix personnalisées [{id,name,emoji,pitch,effects,xy,hotkey}]
   ia: { model: null, pitch: 0, indexRate: 0 },  // voix IA (RVC)
   volumes: {},   // { "fichier": 0..1 } volume individuel (molette sur la tuile)
+  loud: {},      // { "fichier": true } sons marqués « fort » -> atténués automatiquement
+  loudFactor: 0.55,  // volume appliqué aux sons « forts » (se multiplie avec la molette)
   plays: {},     // { "fichier": nombre de lectures }
   sort: 'name',  // tri des sons : name | plays | recent
   collapsed: [], // catégories repliées
@@ -24,6 +26,7 @@ const DEFAULTS = {
   onboard: { dismissed: false, discordDone: false },  // checklist premier lancement
   replay: { source: 'mic', seconds: 5, auto: false, autoClip: false,
             yamCats: ['laugh', 'applause', 'shout'], yamAutoClip: false,
+            yamPlayActions: false, yamActions: {},   // réactions auto : { catId: fichier son }
             mode: 'video',   // onglet interne : vidéo mis en avant (audio en second)
             grabHotkey: '`', // raccourci global « figer les X dernières secondes » — touche physique en haut à gauche (« ² » sur AZERTY)
             // Live looper : capture un court échantillon du micro et le joue en boucle
@@ -41,6 +44,8 @@ const DEFAULTS = {
             video: { audio: 'system', seconds: 30, quality: '1080', auto: false } },
   theme: 'discord', // thème de couleur (voir THEMES)
   bg: 'none',       // fond d'écran décoratif (voir BACKGROUNDS)
+  showWaveforms: false, // afficher une mini forme d'onde sur les tuiles
+  waveforms: {},    // cache des pics par fichier (calculé une fois) : { file: [0..1, …] }
   normalizeImport: false, // normaliser le volume des sons à l'import (loudnorm)
   tts: { voice: 'fr-FR-DeniseNeural', rate: 1, pitch: 0, history: [] }, // onglet Dire
 };
@@ -177,6 +182,55 @@ function askText({ title, sub, value }) {
 }
 
 function norm(s) { return s.normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase(); }
+
+// Quelques alias fixes (recherche) : taper l'un trouve aussi les sons nommés avec l'autre.
+const SEARCH_ALIASES = {
+  mdr: 'rire', lol: 'rire', ptdr: 'rire', rire: 'rire', rires: 'rire',
+  bruh: 'bruh', wtf: 'wtf',
+  boo: 'huée', hue: 'huée',
+  clap: 'applaudissement', claps: 'applaudissement', bravo: 'applaudissement',
+  triste: 'pleur', pleur: 'pleur', pleurs: 'pleur',
+  mort: 'mort', dead: 'mort', rip: 'mort',
+  win: 'victoire', gg: 'victoire',
+};
+// Distance d'édition (Levenshtein) plafonnée : au-delà de `max` on arrête et renvoie
+// max+1 (on ne veut pas le score exact, juste savoir si le mot est "assez proche").
+function editDistanceWithin(a, b, max) {
+  if (Math.abs(a.length - b.length) > max) return max + 1;
+  const m = a.length, n = b.length;
+  let prev = new Array(n + 1);
+  for (let j = 0; j <= n; j++) prev[j] = j;
+  for (let i = 1; i <= m; i++) {
+    const cur = new Array(n + 1);
+    cur[0] = i;
+    let rowMin = cur[0];
+    for (let j = 1; j <= n; j++) {
+      const cost = a[i - 1] === b[j - 1] ? 0 : 1;
+      cur[j] = Math.min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + cost);
+      if (cur[j] < rowMin) rowMin = cur[j];
+    }
+    if (rowMin > max) return max + 1;   // toute la ligne dépasse -> abandon
+    prev = cur;
+  }
+  return prev[n];
+}
+// Un son "matche" la requête si : substring exact, alias connu, OU un des mots du nom
+// est à une faute de frappe près d'un des mots tapés (tolérance selon la longueur).
+function searchMatch(nameNorm, qNorm) {
+  if (nameNorm.includes(qNorm)) return true;
+  const qWords = qNorm.split(/\s+/).filter(Boolean);
+  const nameWords = nameNorm.split(/[\s\-_.]+/).filter(Boolean);
+  for (const qw of qWords) {
+    const alias = SEARCH_ALIASES[qw];
+    if (alias && nameNorm.includes(alias)) return true;
+    // Mots très courts : pas de tolérance aux fautes (trop permissif), on exige
+    // la sous-chaîne exacte — sinon « ca » ferait matcher toute la bibliothèque.
+    if (qw.length < 3) { if (!nameNorm.includes(qw)) return false; continue; }
+    const maxDist = qw.length <= 5 ? 1 : 2;
+    if (!nameWords.some(nw => editDistanceWithin(qw, nw, maxDist) <= maxDist)) return false;
+  }
+  return qWords.length > 0;
+}
 function hash(s) { let h = 0; for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) | 0; return Math.abs(h); }
 const EMOJIS = ['😂','🔥','💀','🎺','🐸','👌','💥','🚨','🤡','🗿','🎉','😱','💨','🔊','🥶','😎','🤣','👀','🐔','🦆','⚡','🎮','🏆','😈','🥴','🤖','👻','🎵','🍗','🧨','🪗','🐷'];
 function esc(s) { return s.replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c])); }
@@ -306,12 +360,21 @@ function buildOutputJobs(url, file, { localOnly = false, svol = 1 } = {}) {
   return jobs;
 }
 
+// Volume effectif d'un son : volume individuel (molette) × atténuation « fort ».
+// Les sons marqués « fort » (clic droit) sont joués plus bas même après normalisation,
+// car un son saturé reste perçu comme agressif à niveau LUFS égal.
+function soundVolume(file) {
+  const base = fin(state.volumes[file], 1);
+  const loud = state.loud && state.loud[file];
+  return loud ? base * fin(state.loudFactor, 0.55) : base;
+}
+
 // localOnly = écoute privée : joue uniquement dans le casque, rien vers Discord
 async function playSound(s, { localOnly = false } = {}) {
   if (!s) return;
   if (state.cut) stopAll(false);
   const url = window.sb.soundUrl(s.file);
-  const svol = fin(state.volumes[s.file], 1);   // volume individuel du son
+  const svol = soundVolume(s.file);   // molette × atténuation « fort »
   const jobs = buildOutputJobs(url, s.file, { localOnly, svol });
   if (!jobs.length) { toast('⚠️ Aucune sortie active — vérifie les réglages ⚙️'); return; }
   if (!localOnly) {
@@ -1043,21 +1106,39 @@ function showVolBadge(tile, file) {
   b._h = setTimeout(() => b.classList.remove('show'), 900);
   const meta = tile.querySelector('.dur');
   if (meta) meta.textContent = tileMeta(file);
+  updateVolBar(tile, file);
+}
+
+// Jauge de volume verticale (bord droit de la tuile) : reflète le volume EFFECTIF
+// (molette × atténuation « fort »). Masquée quand il vaut 100% (rien à signaler).
+function updateVolBar(tile, file) {
+  const vbar = tile.querySelector('.vbar'), fill = tile.querySelector('.vbar-fill');
+  if (!vbar || !fill) return;
+  const v = soundVolume(file);
+  if (v >= 0.999) { vbar.classList.remove('show'); return; }
+  vbar.classList.add('show');
+  fill.style.height = Math.round(v * 100) + '%';
 }
 
 function tileFor(s) {
   const t = document.createElement('div');
-  t.className = 'tile' + (state.favs.includes(s.file) ? ' fav' : '');
+  const isLoud = !!(state.loud && state.loud[s.file]);
+  t.className = 'tile' + (state.favs.includes(s.file) ? ' fav' : '') + (isLoud ? ' loud' : '');
   t.dataset.file = s.file;
   const key = keyFor(s.file);
   t.innerHTML =
     '<span class="star" title="Favori">⭐</span>' +
+    (isLoud ? '<span class="loud-badge" title="Son fort — joué atténué">🔉</span>' : '') +
     (key ? '<span class="key">' + esc(key) + '</span>' : '') +
     iconHtml(s.file) +
     '<div class="name">' + esc(s.name) + '</div>' +
     '<div class="dur">' + tileMeta(s.file) + '</div>' +
-    '<div class="bar"></div>';
+    (state.showWaveforms ? '<div class="wf"></div>' : '') +
+    '<div class="bar"></div>' +
+    '<div class="vbar"><div class="vbar-fill"></div></div>';
   wireIconFallback(t);
+  updateVolBar(t, s.file);   // jauge de volume verticale (masquée si 100%)
+  if (state.showWaveforms) ensureWaveform(s.file, t);   // passe la tuile (peut être hors DOM)
   t.addEventListener('click', (e) => {
     if (e.target.classList.contains('star')) { toggleFav(s); return; }
     if (e.shiftKey) { playSound(s, { localOnly: true }); return; }  // écoute privée
@@ -1102,6 +1183,70 @@ function loadDuration(s, tile) {
   };
 }
 
+/* ===== Formes d'onde des tuiles (calcul lazy + cache) ===== */
+const WF_BARS = 40;                 // nombre de barres par forme d'onde
+let wfCtx = null;                   // AudioContext dédié au décodage (créé à la demande)
+const wfQueue = [];                 // file des fichiers à analyser
+let wfBusy = false;                 // un décodage est en cours (on limite à 1 à la fois)
+
+// Décode un son et en extrait WF_BARS pics normalisés (0..1). Résultat mis en cache
+// dans state.waveforms[file] (persisté) : on ne calcule qu'une seule fois par son.
+async function computeWaveform(file) {
+  try {
+    if (!wfCtx) wfCtx = new AudioContext();
+    const resp = await fetch(window.sb.soundUrl(file));
+    const arr = await resp.arrayBuffer();
+    const buf = await wfCtx.decodeAudioData(arr);
+    const data = buf.getChannelData(0);
+    const block = Math.floor(data.length / WF_BARS) || 1;
+    const peaks = new Array(WF_BARS);
+    let maxPeak = 0.0001;
+    for (let b = 0; b < WF_BARS; b++) {
+      let peak = 0;
+      const start = b * block;
+      for (let i = 0; i < block; i++) { const v = Math.abs(data[start + i] || 0); if (v > peak) peak = v; }
+      peaks[b] = peak; if (peak > maxPeak) maxPeak = peak;
+    }
+    // normalise pour que le son remplisse la hauteur (pics relatifs à son propre max)
+    for (let b = 0; b < WF_BARS; b++) peaks[b] = Math.round((peaks[b] / maxPeak) * 100) / 100;
+    return peaks;
+  } catch { return null; }
+}
+
+// File d'attente : décode un son à la fois pour ne pas saturer le CPU au chargement.
+function pumpWaveformQueue() {
+  if (wfBusy || !wfQueue.length) return;
+  wfBusy = true;
+  const file = wfQueue.shift();
+  computeWaveform(file).then((peaks) => {
+    if (peaks) { state.waveforms[file] = peaks; saveState(); renderTileWaveform(file); }
+    wfBusy = false;
+    pumpWaveformQueue();
+  });
+}
+
+// Demande la forme d'onde d'un son. `tile` = l'élément tuile (peut être hors DOM,
+// ex. en cours de construction dans tileFor). Depuis le cache si dispo, sinon en file.
+function ensureWaveform(file, tile) {
+  if (!state.showWaveforms) return;
+  if (state.waveforms[file]) { renderTileWaveform(file, tile); return; }
+  if (!wfQueue.includes(file)) wfQueue.push(file);
+  pumpWaveformQueue();
+}
+
+// Dessine la forme d'onde (barres). Si `tile` est fourni on l'utilise directement
+// (fonctionne même hors DOM) ; sinon on la retrouve par sélecteur (calcul asynchrone).
+function renderTileWaveform(file, tile) {
+  const el = tile || document.querySelector('.tile[data-file="' + CSS.escape(file) + '"]');
+  if (!el) return;
+  const host = el.querySelector('.wf');
+  if (!host) return;
+  const peaks = state.waveforms[file];
+  if (!peaks) return;
+  host.innerHTML = peaks.map(p => '<i style="height:' + Math.max(6, Math.round(p * 100)) + '%"></i>').join('');
+  host.classList.add('show');
+}
+
 // Déplace un son vers une catégorie ('' = Général) et met à jour les mappings
 async function moveSoundTo(file, folder) {
   const cur = file.includes('/') ? file.slice(0, file.lastIndexOf('/')) : '';
@@ -1119,8 +1264,9 @@ function remapFile(oldFile, newFile) {
   const i = state.favs.indexOf(oldFile);
   if (i >= 0) state.favs[i] = newFile;
   for (const k of Object.keys(state.hotkeys)) if (state.hotkeys[k] === oldFile) state.hotkeys[k] = newFile;
-  for (const map of [state.icons, state.volumes, state.plays]) {
-    if (map[oldFile] != null) { map[newFile] = map[oldFile]; delete map[oldFile]; }
+  // conserve toutes les métadonnées liées au fichier (dont le tag « fort » et la waveform)
+  for (const map of [state.icons, state.volumes, state.plays, state.loud, state.waveforms]) {
+    if (map && map[oldFile] != null) { map[newFile] = map[oldFile]; delete map[oldFile]; }
   }
   saveState();
 }
@@ -1239,7 +1385,7 @@ function scheduleRender() {
 
 function render() {
   const q = norm($('search').value.trim());
-  const filtered = q ? sounds.filter(s => norm(s.name).includes(q)) : sounds;
+  const filtered = q ? sounds.filter(s => searchMatch(norm(s.name), q)) : sounds;
   const c = $('content');
   c.innerHTML = '';
 
@@ -1393,6 +1539,15 @@ function toggleFav(s) {
   render();
 }
 
+// Marque / démarque un son comme « fort » : il sera joué atténué (loudFactor).
+function toggleLoud(file) {
+  state.loud = state.loud || {};
+  if (state.loud[file]) { delete state.loud[file]; toast('🔊 Son remis à volume normal'); }
+  else { state.loud[file] = true; toast('🔉 Son marqué « fort » — joué à ' + Math.round(fin(state.loudFactor, 0.55) * 100) + '%'); }
+  saveState();
+  render();
+}
+
 /* ================== Menu contextuel ================== */
 let ctxSound = null;
 function openCtx(e, s) {
@@ -1407,6 +1562,9 @@ function openCtx(e, s) {
     '<div data-act="icon">🎨 Changer l\'icône</div>' +
     '<div data-act="edit">✂️ Éditer / Découper</div>' +
     '<div data-act="normalize">📊 Normaliser le volume</div>' +
+    '<div data-act="loud">' + (state.loud && state.loud[s.file]
+      ? '🔉 Ne plus marquer « fort »'
+      : '🔉 Marquer « fort » (jouer atténué)') + '</div>' +
     '<div data-act="key">⌨️ ' + (key ? 'Changer la touche (' + esc(key) + ')' : 'Assigner une touche') + '</div>' +
     (key ? '<div data-act="unkey">🚫 Retirer la touche</div>' : '') +
     '<div data-act="rename">✏️ Renommer</div>' +
@@ -1427,6 +1585,7 @@ $('ctx').addEventListener('click', async (e) => {
   if (act === 'icon') openIconEditor(s);
   if (act === 'edit') openAudioEditor(s);
   if (act === 'normalize') normalizeSounds([s.file]);
+  if (act === 'loud') toggleLoud(s.file);
   if (act === 'key') captureKey(s);
   if (act === 'unkey') {
     for (const [k, f] of Object.entries(state.hotkeys)) if (f === s.file) delete state.hotkeys[k];
@@ -2127,6 +2286,11 @@ bindSwitch('swDiscord', () => state.discord.enabled, v => state.discord.enabled 
 bindSwitch('swMonitor', () => state.monitor.enabled, v => state.monitor.enabled = v);
 bindSwitch('swCut', () => state.cut, v => state.cut = v);
 bindSwitch('swNorm', () => state.normalizeImport, v => state.normalizeImport = v);
+// Forme d'onde sur les tuiles (option graphique)
+bindSwitch('swWaveforms', () => state.showWaveforms, v => { state.showWaveforms = v; render(); });
+// Atténuation appliquée aux sons marqués « fort »
+bindVol('volLoudFactor', 'volLoudFactorLbl', () => fin(state.loudFactor, 0.55),
+  v => { state.loudFactor = Math.max(0.1, v); render(); });
 // Normaliser TOUTE la bibliothèque d'un coup (bouton Réglages)
 $('btnNormalizeAll').addEventListener('click', async () => {
   const files = sounds.map(s => s.file);
@@ -2711,9 +2875,46 @@ function switchTab(tab) {
     $(id).style.display = isSounds ? '' : 'none';
   }
   if (tab === 'voice') { renderVoice(); renderCustomVoices(); updateVoiceStatus(); refreshIaSection(); }
-  if (tab === 'replay') { refreshReplayTab(); setReplayMode(state.replay.mode || 'audio'); refreshLooperUI(); refreshLooperKeys(); }
+  if (tab === 'replay') { refreshReplayTab(); setReplayMode(state.replay.mode || 'audio'); refreshLooperUI(); refreshLooperKeys(); renderYamActions(); }
   if (tab === 'tts') { renderTtsHistory(); refreshTtsAi(); $('ttsText').focus(); }
-  if (tab === 'guide') renderGuideKeys();
+  if (tab === 'guide') { renderGuideKeys(); renderStats(); }
+}
+
+// Statistiques d'usage (onglet Guide) : exploite state.plays, déjà tenu à jour à
+// chaque lecture (playSound). Purement dérivé — aucune donnée dédiée à maintenir.
+function renderStats() {
+  const row = $('statsRow'), top = $('statsTop');
+  if (!row || !top) return;
+
+  const entries = Object.entries(state.plays || {}).filter(([file, n]) => n > 0 && sounds.some(s => s.file === file));
+  const totalPlays = entries.reduce((sum, [, n]) => sum + n, 0);
+  const playedCount = entries.length;
+  const libSize = sounds.length;
+  const favCount = (state.favs || []).length;
+
+  const card = (value, label) => '<div class="stat-tile"><div class="stat-val">' + value + '</div><div class="stat-lbl">' + label + '</div></div>';
+  row.innerHTML =
+    card(totalPlays, 'lecture' + (totalPlays > 1 ? 's' : '') + ' au total') +
+    card(playedCount + ' / ' + libSize, 'sons déjà joués') +
+    card(favCount, 'favori' + (favCount > 1 ? 's' : ''));
+
+  if (!entries.length) {
+    top.innerHTML = '<div class="hint">Joue quelques sons pour voir apparaître ton classement ici.</div>';
+    return;
+  }
+  const ranked = entries
+    .map(([file, n]) => ({ file, n, s: sounds.find(x => x.file === file) }))
+    .sort((a, b) => b.n - a.n)
+    .slice(0, 10);
+  const maxN = ranked[0].n;
+  top.innerHTML = ranked.map((r, i) =>
+    '<div class="stat-rank-row">' +
+      '<span class="stat-rank-n">#' + (i + 1) + '</span>' +
+      '<span class="stat-rank-name">' + esc(r.s ? r.s.name : r.file) + '</span>' +
+      '<span class="stat-rank-bar"><i style="width:' + Math.round((r.n / maxN) * 100) + '%"></i></span>' +
+      '<span class="stat-rank-count">' + r.n + '×</span>' +
+    '</div>'
+  ).join('');
 }
 
 // Liste dynamique des touches assignées aux sons (onglet Guide)
@@ -3327,6 +3528,16 @@ function yamOnDetect(best) {
   if (yamEvents.length > 8) yamEvents.shift();
   renderYamEvents();
   if (state.replay.yamAutoClip) setTimeout(() => yamSaveEvent(ev, true), 2000);
+  // Réaction auto : si un son est associé à cette catégorie, on le joue (dans Discord).
+  // Garde anti-boucle : on ne déclenche pas si un son joue déjà (sinon la réaction
+  // pourrait se ré-entendre elle-même sur la capture « son du PC » et s'auto-relancer).
+  if (state.replay.yamPlayActions && active.size === 0) {
+    const file = state.replay.yamActions && state.replay.yamActions[best.cat.id];
+    if (file) {
+      const s = sounds.find(x => x.file === file);
+      if (s) { playSound(s); toast('🎬 Réaction : ' + best.cat.emoji + ' → ' + s.name); }
+    }
+  }
 }
 
 async function yamSaveEvent(ev, auto = false) {
@@ -3410,9 +3621,42 @@ function renderYamChips() {
     chip.addEventListener('click', () => {
       const s = new Set(state.replay.yamCats || ['laugh', 'applause', 'shout']);
       s.has(c.id) ? s.delete(c.id) : s.add(c.id);
-      state.replay.yamCats = [...s]; saveState(); renderYamChips();
+      state.replay.yamCats = [...s]; saveState(); renderYamChips(); renderYamActions();
     });
     box.appendChild(chip);
+  }
+}
+
+// Réactions auto : une ligne par catégorie SÉLECTIONNÉE, avec un sélecteur de son.
+function renderYamActions() {
+  const box = $('yamActions'); if (!box) return;
+  box.style.display = state.replay.yamPlayActions ? 'block' : 'none';
+  if (!state.replay.yamPlayActions) return;
+  const sel = state.replay.yamCats || [];
+  const cats = YAM_CATS.filter(c => sel.includes(c.id));
+  state.replay.yamActions = state.replay.yamActions || {};
+  if (!cats.length) {
+    box.innerHTML = '<div class="hint">Coche au moins une catégorie ci-dessus pour lui associer un son.</div>';
+    return;
+  }
+  box.innerHTML = '';
+  for (const c of cats) {
+    const row = document.createElement('div');
+    row.className = 'yam-action-row';
+    const label = document.createElement('span');
+    label.className = 'yam-action-lbl';
+    label.textContent = c.emoji + ' ' + c.label;
+    const selEl = document.createElement('select');
+    selEl.innerHTML = '<option value="">— aucun —</option>' +
+      sounds.map(s => '<option value="' + esc(s.file) + '">' + esc(s.name) + '</option>').join('');
+    selEl.value = state.replay.yamActions[c.id] || '';
+    selEl.addEventListener('change', () => {
+      if (selEl.value) state.replay.yamActions[c.id] = selEl.value;
+      else delete state.replay.yamActions[c.id];
+      saveState();
+    });
+    row.appendChild(label); row.appendChild(selEl);
+    box.appendChild(row);
   }
 }
 
@@ -3753,6 +3997,9 @@ $('replaySource2').addEventListener('change', (e) => { state.replay.source = e.t
   // ----- Section BÊTA : reconnaissance de sons (YAMNet) -----
   $('yamAutoClip').checked = !!state.replay.yamAutoClip;
   $('yamAutoClip').addEventListener('change', (e) => { state.replay.yamAutoClip = e.target.checked; saveState(); });
+  $('yamPlayActions').checked = !!state.replay.yamPlayActions;
+  $('yamPlayActions').addEventListener('change', (e) => { state.replay.yamPlayActions = e.target.checked; saveState(); renderYamActions(); });
+  renderYamActions();
   $('yamSwitch').addEventListener('change', async (e) => {
     if (typeof openAdvCard === 'function') openAdvCard(e.target);
     if (e.target.checked) {
@@ -4400,6 +4647,35 @@ function requestVideoThumb(clip, el) {
   }).catch(() => {}));
 }
 
+// Date de CAPTURE d'un clip. Priorité au nom du fichier (« Clip 2026-07-29 13h25m38 »,
+// ou ancien format « Clip 13h25m38 ») : le mtime n'est pas fiable, il change au remux
+// et à la découpe — c'est ce qui affichait deux heures différentes.
+function clipCaptureDate(clip) {
+  const name = clip.file.replace(/\.webm$/i, '');
+  // nouveau format : date + heure
+  let m = /(\d{4})-(\d{2})-(\d{2})[ _]+(\d{2})h(\d{2})m(\d{2})/.exec(name);
+  if (m) return new Date(+m[1], +m[2] - 1, +m[3], +m[4], +m[5], +m[6]);
+  // ancien format : heure seule -> on prend le jour du fichier, l'heure du nom
+  m = /(\d{2})h(\d{2})m(\d{2})/.exec(name);
+  if (m) {
+    const d = new Date(clip.mtime);
+    return new Date(d.getFullYear(), d.getMonth(), d.getDate(), +m[1], +m[2], +m[3]);
+  }
+  return new Date(clip.mtime);
+}
+// « aujourd'hui à 13:25 », « hier à 20:04 », sinon « 29/07 à 13:25 »
+function fmtClipWhen(d) {
+  const pad = (n) => String(n).padStart(2, '0');
+  const hm = pad(d.getHours()) + ':' + pad(d.getMinutes());
+  const today = new Date(); today.setHours(0, 0, 0, 0);
+  const day = new Date(d); day.setHours(0, 0, 0, 0);
+  const diffDays = Math.round((today - day) / 86400000);
+  if (diffDays === 0) return "aujourd'hui à " + hm;
+  if (diffDays === 1) return 'hier à ' + hm;
+  if (diffDays > 1 && diffDays < 7) return 'il y a ' + diffDays + ' j à ' + hm;
+  return pad(d.getDate()) + '/' + pad(d.getMonth() + 1) + ' à ' + hm;
+}
+
 let vidRepairDone = false;   // réparation des clips existants : une fois par session
 async function loadVideoClips() {
   const box = $('vidList'); if (!box) return;
@@ -4421,11 +4697,15 @@ async function loadVideoClips() {
     const el = document.createElement('div');
     el.className = 'vid-clip';
     const mb = Math.round(c.size / 1e6 * 10) / 10;
-    const when = new Date(c.mtime);
+    const when = clipCaptureDate(c);
+    // Nom affiché : on retire la DATE du nom (elle est déjà dans la méta, en lisible)
+    // mais on garde l'heure, qui distingue les clips entre eux.
+    const raw = c.file.replace(/\.webm$/i, '');
+    const pretty = raw.replace(/^(Clip)[ _]+\d{4}-\d{2}-\d{2}[ _]+(\d{2}h\d{2}m\d{2})$/, '$1 $2');
     el.innerHTML =
       '<div class="vc-thumb">🎬</div>' +
-      '<div class="vc-info"><div class="vc-name">' + esc(c.file.replace(/\.webm$/i, '')) + '</div>' +
-      '<div class="vc-meta">' + mb + ' Mo · ' + when.toLocaleTimeString() + '</div></div>' +
+      '<div class="vc-info"><div class="vc-name">' + esc(pretty) + '</div>' +
+      '<div class="vc-meta">' + mb + ' Mo · ' + fmtClipWhen(when) + '</div></div>' +
       '<div class="vc-acts">' +
         '<button data-vc="folder" title="Voir dans le dossier">📂</button>' +
         '<button data-vc="del" title="Supprimer">🗑️</button>' +
@@ -4458,6 +4738,7 @@ function openVideoPlayer(file) {
   // média, le navigateur recalcule alors la vraie durée, puis on revient au début.
   fixWebmDuration(v);
   v.play().catch(() => {});
+  vtOpen(file);   // prépare l'éditeur de découpe pour ce clip
 }
 function fixWebmDuration(v) {
   // Début réel du média : après purge du buffer, le 1er cluster peut démarrer à un
@@ -4479,7 +4760,118 @@ function closeVideoPlayer() {
   const v = $('vidPlayerEl');
   v.pause(); v.removeAttribute('src'); v.load();
   $('vidPlayer').style.display = 'none';
+  vtStopPreview();
 }
+
+/* ===== Découpe d'un clip vidéo (éditeur du lecteur) ===== */
+const vt = { file: null, dur: 0, start: 0, end: 0, previewTimer: null };
+
+function vtOpen(file) {
+  vt.file = file; vt.dur = 0; vt.start = 0; vt.end = 0;
+  const v = $('vidPlayerEl');
+  $('vidTrimInfo').textContent = 'Chargement…';
+  // la durée d'un WebM MediaRecorder arrive tardivement (voir fixWebmDuration)
+  const onDur = () => {
+    const d = v.duration;
+    if (!isFinite(d) || d <= 0) return;
+    vt.dur = d; vt.start = 0; vt.end = d;
+    vtRender();
+    v.removeEventListener('durationchange', onDur);
+  };
+  v.addEventListener('durationchange', onDur);
+  onDur();
+}
+
+function vtRender() {
+  const track = $('vidTrimTrack'); if (!track || !vt.dur) return;
+  const w = track.clientWidth || 1;
+  const x = (t) => (t / vt.dur) * w;
+  $('vidTrimSel').style.left = x(vt.start) + 'px';
+  $('vidTrimSel').style.width = Math.max(0, x(vt.end) - x(vt.start)) + 'px';
+  $('vidTrimStart').style.left = x(vt.start) + 'px';
+  $('vidTrimEnd').style.left = x(vt.end) + 'px';
+  const sel = vt.end - vt.start;
+  $('vidTrimInfo').textContent =
+    fmtDur(vt.start) + ' → ' + fmtDur(vt.end) + '  ·  sélection ' + fmtDur(sel) + ' / ' + fmtDur(vt.dur);
+}
+
+function vtCursor() {
+  const track = $('vidTrimTrack'), v = $('vidPlayerEl');
+  if (!track || !vt.dur) return;
+  $('vidTrimCursor').style.left = ((v.currentTime / vt.dur) * (track.clientWidth || 1)) + 'px';
+}
+
+function vtStopPreview() {
+  if (vt.previewTimer) { clearInterval(vt.previewTimer); vt.previewTimer = null; }
+}
+
+function vtPreview() {
+  const v = $('vidPlayerEl');
+  if (!vt.dur) return;
+  vtStopPreview();
+  v.currentTime = vt.start;
+  v.play().catch(() => {});
+  vt.previewTimer = setInterval(() => {
+    if (v.currentTime >= vt.end) { v.pause(); vtStopPreview(); }
+  }, 60);
+}
+
+async function vtSave(replace) {
+  if (!vt.file || !vt.dur) return;
+  if (!(vt.end > vt.start)) { toast('⚠️ Sélection vide'); return; }
+  if (replace && !confirm('Remplacer le clip par la sélection ?\nL\'original sera perdu.')) return;
+  const btns = ['vidTrimSaveCopy', 'vidTrimSaveReplace'].map(id => $(id));
+  btns.forEach(b => b.disabled = true);
+  toast('✂️ Découpe en cours…', 8000);
+  const r = await window.sb.trimVideoClip(vt.file, { start: vt.start, end: vt.end, replace });
+  btns.forEach(b => b.disabled = false);
+  if (r && r.ok) {
+    toast('✅ Clip découpé' + (replace ? '' : ' (copie créée)'));
+    await loadVideoClips();
+    closeVideoPlayer();
+  } else toast('❌ ' + ((r && r.error) || 'Échec de la découpe'), 5000);
+}
+
+(function initVidTrim() {
+  const track = $('vidTrimTrack'); if (!track) return;
+  const v = $('vidPlayerEl');
+  const timeAt = (clientX) => {
+    const r = track.getBoundingClientRect();
+    return Math.max(0, Math.min(vt.dur, ((clientX - r.left) / (r.width || 1)) * vt.dur));
+  };
+  let dragging = null;   // 'start' | 'end'
+  const onMove = (e) => {
+    if (!dragging || !vt.dur) return;
+    const t = timeAt(e.clientX);
+    if (dragging === 'start') vt.start = Math.min(t, vt.end - 0.05);
+    else vt.end = Math.max(t, vt.start + 0.05);
+    vtRender();
+  };
+  const onUp = () => { dragging = null; document.removeEventListener('pointermove', onMove); document.removeEventListener('pointerup', onUp); };
+  const grab = (which) => (e) => {
+    e.preventDefault(); e.stopPropagation();
+    dragging = which;
+    document.addEventListener('pointermove', onMove);
+    document.addEventListener('pointerup', onUp);
+  };
+  $('vidTrimStart').addEventListener('pointerdown', grab('start'));
+  $('vidTrimEnd').addEventListener('pointerdown', grab('end'));
+  // clic sur la piste = déplacer la lecture
+  track.addEventListener('click', (e) => {
+    if (!vt.dur || e.target.classList.contains('vid-trim-handle')) return;
+    v.currentTime = timeAt(e.clientX);
+    vtCursor();
+  });
+  v.addEventListener('timeupdate', vtCursor);
+  window.addEventListener('resize', vtRender);
+
+  $('vidTrimPreview').addEventListener('click', vtPreview);
+  $('vidTrimSetStart').addEventListener('click', () => { if (vt.dur) { vt.start = Math.min(v.currentTime, vt.end - 0.05); vtRender(); } });
+  $('vidTrimSetEnd').addEventListener('click', () => { if (vt.dur) { vt.end = Math.max(v.currentTime, vt.start + 0.05); vtRender(); } });
+  $('vidTrimReset').addEventListener('click', () => { if (vt.dur) { vt.start = 0; vt.end = vt.dur; vtRender(); } });
+  $('vidTrimSaveCopy').addEventListener('click', () => vtSave(false));
+  $('vidTrimSaveReplace').addEventListener('click', () => vtSave(true));
+})();
 
 // ----- Bascule mode audio/vidéo dans l'onglet Replay -----
 function setReplayMode(mode) {
@@ -4591,6 +4983,11 @@ $('btnOverlay').addEventListener('click', () => window.sb.overlay.toggle());
   updateVoiceStatus();
   refreshIaSection();   // prépare la section Voix IA dès le démarrage (sans attendre l'onglet)
   renderOnboard();      // checklist premier lancement (se cache une fois complétée)
+  // Micro → Discord : si activé dans l'état sauvegardé, on DÉMARRE réellement la chaîne
+  // micro au lancement (bindSwitch ne fait que cocher la case, il ne déclenche pas
+  // l'action). Sans ça, la case est cochée mais aucun son ne passe tant qu'on n'a pas
+  // re-basculé le toggle manuellement.
+  if (state.mic.enabled && !iaLive) setMicPassthrough(true);
   if (state.replay.auto) startReplay();   // ShadowPlay audio : le ring tourne dès l'ouverture
   if (state.replay.video && state.replay.video.auto) startVideoReplay();   // ShadowPlay vidéo
   if (state.replay.looper && state.replay.looper.enabled) startLooperCapture();   // live looper prêt dès le lancement

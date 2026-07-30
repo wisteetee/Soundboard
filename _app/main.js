@@ -1310,7 +1310,11 @@ ipcMain.handle('save-video-clip', async (_e, buffer, name) => {
   try {
     const t = new Date();
     const pad = (n) => String(n).padStart(2, '0');
-    const dflt = `Clip ${pad(t.getHours())}h${pad(t.getMinutes())}m${pad(t.getSeconds())}`;
+    // La DATE est incluse dans le nom : le mtime du fichier n'est pas fiable comme
+    // date de capture (il change au remux/à la découpe), et on veut la retrouver
+    // même après avoir déplacé le fichier.
+    const dflt = `Clip ${t.getFullYear()}-${pad(t.getMonth() + 1)}-${pad(t.getDate())} `
+      + `${pad(t.getHours())}h${pad(t.getMinutes())}m${pad(t.getSeconds())}`;
     const base = sanitizeName(name || dflt) || 'clip';
     const dest = uniquePath(videoClipsDir(), base, '.webm');
     fs.writeFileSync(dest, Buffer.from(buffer));
@@ -1351,6 +1355,55 @@ ipcMain.handle('delete-video-clip', (_e, file) => {
     if (full.startsWith(dir + path.sep) && fs.existsSync(full)) fs.rmSync(full, { force: true });
     return { ok: true };
   } catch (e) { return { error: String(e.message || e) }; }
+});
+// Découpe d'un clip vidéo (comme l'éditeur audio, mais pour la vidéo).
+// -ss/-to APRÈS -i = découpe précise (avant -i, ffmpeg se cale sur la keyframe).
+// On ré-encode (VP8/Opus) car une copie brute couperait à la keyframe la plus proche.
+ipcMain.handle('trim-video-clip', async (_e, file, opts = {}) => {
+  if (!ffmpegReady()) return { error: 'ffmpeg absent' };
+  const dir = videoClipsDir();
+  const src = path.join(dir, path.basename(file || ''));
+  if (!src.startsWith(dir + path.sep) || !fs.existsSync(src)) return { error: 'Clip introuvable' };
+
+  const start = Math.max(0, Number(opts.start) || 0);
+  const end = Number(opts.end);
+  if (!(end > start)) return { error: 'Sélection invalide' };
+
+  let finalDest;
+  if (opts.replace) finalDest = src;
+  else {
+    const base = sanitizeName(opts.newName || (path.basename(src, '.webm') + ' (coupé)')) || 'clip';
+    finalDest = uniquePath(dir, base, '.webm');
+  }
+  const tmpOut = path.join(dir, '~vtrim_' + Date.now() + '.webm');
+
+  // VP9 : même codec que les captures d'origine, plus rapide ET plus compact que VP8
+  // en mode realtime (mesuré). row-mt = multi-thread par rangées.
+  const args = ['-y', '-i', src, '-ss', String(start), '-to', String(end),
+    '-c:v', 'libvpx-vp9', '-b:v', '2M', '-deadline', 'realtime', '-cpu-used', '5', '-row-mt', '1',
+    '-c:a', 'libopus', '-b:a', '128k', tmpOut];
+
+  return await new Promise((resolve) => {
+    const p = spawn(ffmpegPath(), args, { windowsHide: true });
+    let err = '';
+    p.stderr.on('data', (d) => err += d.toString());
+    p.on('error', (e) => resolve({ error: String(e.message || e) }));
+    p.on('exit', async (code) => {
+      if (code !== 0 || !fs.existsSync(tmpOut)) {
+        try { fs.rmSync(tmpOut, { force: true }); } catch {}
+        return resolve({ error: 'Découpe échouée' + (err ? ' : ' + err.split('\n').filter(Boolean).pop() : '') });
+      }
+      try {
+        if (opts.replace) { fs.rmSync(finalDest, { force: true }); fs.renameSync(tmpOut, finalDest); }
+        else fs.renameSync(tmpOut, finalDest);
+        await remuxWebm(finalDest);   // réécrit la durée/index (seek OK dans VLC & le lecteur)
+        resolve({ ok: true, file: path.basename(finalDest) });
+      } catch (e) {
+        try { fs.rmSync(tmpOut, { force: true }); } catch {}
+        resolve({ error: String(e.message || e) });
+      }
+    });
+  });
 });
 ipcMain.handle('open-video-clip', (_e, file) => {
   const full = path.join(videoClipsDir(), path.basename(file));

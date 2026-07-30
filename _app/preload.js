@@ -29,6 +29,7 @@ contextBridge.exposeInMainWorld('sb', {
   openVideoClip: (file) => ipcRenderer.invoke('open-video-clip', file),
   revealVideoClips: () => ipcRenderer.invoke('reveal-video-clips'),
   repairVideoClips: () => ipcRenderer.invoke('repair-video-clips'),
+  trimVideoClip: (file, opts) => ipcRenderer.invoke('trim-video-clip', file, opts),
   videoUrl: (file) => 'vid://clips/' + encodeURIComponent(file),
   rename: (file, newName) => ipcRenderer.invoke('rename', file, newName),
   remove: (file) => ipcRenderer.invoke('remove', file),

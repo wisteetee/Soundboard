@@ -439,6 +439,13 @@
                   <label class="switch"><input type="checkbox" id="yamAutoClip"><span class="sl"></span></label>
                   <span>🎯 Clipper auto les sons cochés</span>
                 </label>
+                <label class="opt-toggle" style="margin-top:8px">
+                  <label class="switch"><input type="checkbox" id="yamPlayActions"><span class="sl"></span></label>
+                  <span>🎬 Réactions auto : jouer un son quand un bruit est reconnu</span>
+                </label>
+                <div id="yamActions" style="display:none;margin-top:6px"></div>
+                <div class="hint" style="opacity:.7;margin-top:4px">Ex : un cri détecté → joue « Wasted ». La source
+                  écoutée est celle de la capture ci-dessus (micro ou son du PC).</div>
                 <div class="yam-live" id="yamLive"></div>
                 <div id="yamEvents" class="replay-moments" style="display:none;margin-top:10px">
                   <div class="rm-title">🧠 Sons reconnus</div>
@@ -468,6 +475,29 @@
           <button class="cat-btn" id="vidPlayerClose" title="Fermer (Échap)">✕</button>
         </div>
         <video id="vidPlayerEl" controls autoplay></video>
+
+        <!-- Découpe du clip (comme l'éditeur audio des sons) -->
+        <div class="vid-trim" id="vidTrim">
+          <div class="vid-trim-head">
+            <span>✂️ Découper le clip</span>
+            <span class="hint" id="vidTrimInfo">—</span>
+          </div>
+          <div class="vid-trim-track" id="vidTrimTrack">
+            <div class="vid-trim-sel" id="vidTrimSel"></div>
+            <div class="vid-trim-handle" id="vidTrimStart" title="Début"></div>
+            <div class="vid-trim-handle" id="vidTrimEnd" title="Fin"></div>
+            <div class="vid-trim-cursor" id="vidTrimCursor"></div>
+          </div>
+          <div class="vid-trim-acts">
+            <button class="testbtn" id="vidTrimPreview">▶️ Aperçu sélection</button>
+            <button class="testbtn" id="vidTrimSetStart">⇤ Début ici</button>
+            <button class="testbtn" id="vidTrimSetEnd">Fin ici ⇥</button>
+            <button class="testbtn" id="vidTrimReset">↺ Tout</button>
+            <span style="flex:1"></span>
+            <button class="testbtn" id="vidTrimSaveCopy">💾 Enregistrer une copie</button>
+            <button class="testbtn primary" id="vidTrimSaveReplace">✂️ Remplacer le clip</button>
+          </div>
+        </div>
       </div>
     </div>
 
@@ -537,6 +567,13 @@
         <div class="hint" style="margin-top:4px;max-width:640px">
           Tout ce que l'app sait faire, et les touches pour aller plus vite.
         </div>
+      </div>
+
+      <div class="guide-card" style="margin-bottom:16px">
+        <h3>📊 Statistiques</h3>
+        <div class="stats-row" id="statsRow"></div>
+        <div class="hint" style="margin:10px 0 6px">🔥 Tes sons les plus joués</div>
+        <div id="statsTop"></div>
       </div>
 
       <div class="guide-grid">
@@ -706,6 +743,9 @@
         <label class="switch"><input type="checkbox" id="swNorm"><span class="sl"></span></label>
         Normaliser le volume des sons importés (même niveau sonore partout)
       </label>
+      <div class="vol" style="margin-top:10px">🔉 <input type="range" id="volLoudFactor" min="10" max="100" value="55"><span id="volLoudFactorLbl">55%</span></div>
+      <div class="hint">Volume des sons marqués <b>« fort »</b> (clic droit sur un son → 🔉). Utile pour les
+        sons agressifs qui restent trop forts même après normalisation.</div>
       <button class="testbtn" id="btnNormalizeAll" style="margin-top:8px">📊 Normaliser tous les sons existants</button>
       <div class="hint">Ramène <b>toute ta bibliothèque</b> au même niveau sonore d'un coup. Modifie les fichiers
         (irréversible) et peut prendre un moment sur beaucoup de sons.</div>
@@ -736,6 +776,10 @@
       <div class="theme-row" id="themeRow"></div>
       <div class="hint" style="margin-top:10px">🖼️ Fond d'écran</div>
       <div class="bg-row" id="bgRow"></div>
+      <label class="row" style="margin-top:12px">
+        <label class="switch"><input type="checkbox" id="swWaveforms"><span class="sl"></span></label>
+        📈 Forme d'onde sur les tuiles de sons
+      </label>
     </div>
 
     <!-- Export / import de la bibliothèque -->

@@ -448,6 +448,46 @@ section.cat.drop-over {
   background: linear-gradient(90deg, var(--green), #7dd490);
   transition: width .18s linear;
 }
+/* badge « son fort » (joué atténué) */
+.tile .loud-badge {
+  position: absolute; top: 6px; left: 26px;
+  font-size: 12px; opacity: .9;
+  filter: drop-shadow(0 1px 2px rgba(0,0,0,.5));
+}
+.tile.loud { border-color: rgba(240,178,50,.45); }
+
+/* mini forme d'onde sur la tuile (option) */
+.tile .wf {
+  display: none;
+  align-items: center; justify-content: center;
+  gap: 1px; height: 20px; margin: 6px 4px 0;
+  opacity: .85;
+}
+.tile .wf.show { display: flex; }
+.tile .wf i {
+  flex: 1 1 0; min-width: 0; max-width: 4px;
+  height: 30%;
+  background: var(--blurple);
+  border-radius: 1px;
+  align-self: center;
+}
+.tile.playing .wf i { background: var(--green); }
+
+/* jauge de volume verticale (bord droit) — visible seulement si volume ≠ 100% */
+.tile .vbar {
+  position: absolute; top: 6px; right: 3px; bottom: 6px;
+  width: 3px; border-radius: 3px;
+  background: rgba(255,255,255,.12);
+  opacity: 0; transition: opacity .15s;
+  overflow: hidden;
+}
+.tile .vbar.show { opacity: 1; }
+.tile .vbar-fill {
+  position: absolute; bottom: 0; left: 0; right: 0;
+  height: 100%;
+  background: linear-gradient(180deg, #7dd490, var(--green));
+  transition: height .12s linear;
+}
 /* badge volume (molette) */
 .volb {
   position: absolute; inset: 0;
@@ -760,7 +800,26 @@ aside h2 {
 }
 .vid-player-box { width: min(1100px, 92vw); background: var(--panel); border-radius: 12px; overflow: hidden; }
 .vid-player-head { display: flex; align-items: center; justify-content: space-between; padding: 10px 14px; font-weight: 600; }
-.vid-player-box video { width: 100%; max-height: 76vh; display: block; background: #000; }
+.vid-player-box video { width: 100%; max-height: 60vh; display: block; background: #000; }
+/* Découpe d'un clip vidéo */
+.vid-trim { padding: 12px 14px 14px; border-top: 1px solid var(--border); }
+.vid-trim-head { display: flex; align-items: center; justify-content: space-between; font-size: 13px; font-weight: 600; margin-bottom: 8px; }
+.vid-trim-head .hint { margin: 0; }
+.vid-trim-track {
+  position: relative; height: 34px; background: var(--bg-dark);
+  border: 1px solid var(--border); border-radius: 8px; cursor: pointer; user-select: none;
+}
+.vid-trim-sel { position: absolute; top: 0; bottom: 0; background: rgba(88,101,242,.25); border-left: 2px solid var(--blurple); border-right: 2px solid var(--blurple); }
+.vid-trim-handle {
+  position: absolute; top: -3px; width: 12px; height: 40px; margin-left: -6px;
+  background: var(--blurple); border-radius: 4px; cursor: ew-resize;
+  box-shadow: 0 1px 4px rgba(0,0,0,.4);
+}
+.vid-trim-handle:hover { background: var(--blurple-hover); }
+.vid-trim-cursor { position: absolute; top: 0; bottom: 0; width: 2px; background: var(--green); pointer-events: none; }
+.vid-trim-acts { display: flex; align-items: center; gap: 6px; margin-top: 10px; flex-wrap: wrap; }
+.vid-trim-acts .primary { background: var(--blurple); border-color: transparent; font-weight: 600; }
+.vid-trim-acts .primary:hover { background: var(--blurple-hover); }
 
 /* ---- Replay BÊTA : reconnaissance de sons (YAMNet) ---- */
 .beta-box {
@@ -803,6 +862,11 @@ aside h2 {
 .yam-chip.on { border-color: var(--blurple); background: rgba(88,101,242,.16); color: var(--text); }
 .yam-live { margin-top: 10px; font-size: 12px; color: var(--text-dim); min-height: 18px; }
 .yam-live b { color: var(--text); }
+/* Réactions auto : ligne catégorie -> son */
+.yam-action-row { display: flex; align-items: center; gap: 8px; margin-top: 6px; }
+.yam-action-lbl { flex: 0 0 130px; font-size: 12.5px; color: var(--text); }
+.yam-action-row select { flex: 1; min-width: 0; background: var(--bg-dark); color: var(--text);
+  border: 1px solid var(--border); border-radius: 6px; padding: 5px 7px; font-size: 12px; outline: none; }
 .yam-live .bar { display: inline-block; height: 6px; width: 90px; background: var(--bg-dark); border-radius: 3px; overflow: hidden; vertical-align: middle; margin-left: 6px; }
 .yam-live .bar > div { height: 100%; background: linear-gradient(90deg, var(--blurple), var(--green)); }
 
@@ -816,6 +880,17 @@ aside h2 {
   border-radius: 12px; padding: 14px 16px;
 }
 .guide-card h3 { font-size: 14px; margin-bottom: 10px; }
+/* Statistiques d'usage */
+.stats-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap: 10px; }
+.stat-tile { background: var(--bg-dark); border-radius: 10px; padding: 12px; text-align: center; }
+.stat-val { font-size: 22px; font-weight: 800; color: var(--blurple); }
+.stat-lbl { font-size: 11.5px; color: var(--text-dim); margin-top: 2px; }
+.stat-rank-row { display: flex; align-items: center; gap: 8px; padding: 5px 0; font-size: 12.5px; }
+.stat-rank-n { flex: 0 0 26px; color: var(--text-dim); font-weight: 700; }
+.stat-rank-name { flex: 0 0 150px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.stat-rank-bar { flex: 1; height: 6px; background: var(--bg-dark); border-radius: 3px; overflow: hidden; }
+.stat-rank-bar i { display: block; height: 100%; background: linear-gradient(90deg, var(--blurple), #7d85f5); }
+.stat-rank-count { flex: 0 0 34px; text-align: right; color: var(--text-dim); }
 .gk {
   display: flex; gap: 10px; align-items: baseline;
   font-size: 12.5px; color: var(--text);
