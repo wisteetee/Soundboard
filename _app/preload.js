@@ -22,6 +22,8 @@ contextBridge.exposeInMainWorld('sb', {
   exportConfig: (manifest) => ipcRenderer.invoke('export-config', manifest),
   backupNow: () => ipcRenderer.invoke('backup-now'),
   openBackupFolder: () => ipcRenderer.invoke('open-backup-folder'),
+  backupInfo: () => ipcRenderer.invoke('backup-info'),
+  restoreBackup: () => ipcRenderer.invoke('restore-backup'),
   importConfig: () => ipcRenderer.invoke('import-config'),
   saveClip: (wavBuffer, name) => ipcRenderer.invoke('save-clip', wavBuffer, name),
   // Clips vidéo (replay ShadowPlay)

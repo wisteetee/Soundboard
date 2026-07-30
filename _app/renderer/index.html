@@ -819,10 +819,14 @@
       </div>
       <div class="hint" style="margin-top:12px">🛟 <b>Sauvegarde automatique</b> — tes réglages (favoris, raccourcis,
         icônes, volumes, tags) sont sauvegardés à chaque fermeture. Une seule sauvegarde, toujours à jour.</div>
+      <div class="hint" id="backupInfo" style="opacity:.75">—</div>
       <div style="display:flex;gap:8px;margin-top:6px;flex-wrap:wrap">
         <button class="testbtn" id="btnBackupNow">🛟 Sauvegarder maintenant</button>
+        <button class="testbtn" id="btnBackupRestore">♻️ Restaurer</button>
         <button class="testbtn" id="btnBackupFolder">📂 Voir la sauvegarde</button>
       </div>
+      <div class="hint" style="opacity:.6">La restauration remplace tes réglages actuels par ceux de la
+        sauvegarde (les fichiers audio ne sont pas touchés). L'app se recharge ensuite.</div>
     </div>
 
     <!-- Visualiseur audio temps réel -->

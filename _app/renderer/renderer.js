@@ -3586,13 +3586,37 @@ $('btnExport').addEventListener('click', async () => {
   if (r.ok) toast('✅ Bibliothèque exportée !');
   else if (!r.canceled) toast('❌ ' + (r.error || 'Échec de l\'export'), 4000);
 });
+// Affiche la date de la sauvegarde disponible
+async function refreshBackupInfo() {
+  const el = $('backupInfo'); if (!el) return;
+  try {
+    const i = await window.sb.backupInfo();
+    if (!i || !i.exists) { el.textContent = 'Aucune sauvegarde pour l\'instant (elle se fera à la fermeture).'; return; }
+    const d = new Date(i.mtime);
+    el.textContent = '💾 Dernière sauvegarde : ' + fmtClipWhen(d) + ' · ' + Math.round(i.size / 1024) + ' Ko';
+  } catch { el.textContent = '—'; }
+}
+
 // Sauvegarde manuelle des réglages (la même que celle faite à la fermeture)
 $('btnBackupNow').addEventListener('click', async () => {
   const r = await window.sb.backupNow();
-  if (r && r.ok) toast('🛟 Réglages sauvegardés');
+  if (r && r.ok) { toast('🛟 Réglages sauvegardés'); refreshBackupInfo(); }
   else toast('❌ ' + ((r && r.error) || 'Échec de la sauvegarde'));
 });
 $('btnBackupFolder').addEventListener('click', () => window.sb.openBackupFolder());
+// Restauration : remplace les réglages actuels puis recharge l'app
+$('btnBackupRestore').addEventListener('click', async () => {
+  const i = await window.sb.backupInfo();
+  if (!i || !i.exists) { toast('⚠️ Aucune sauvegarde à restaurer'); return; }
+  const quand = fmtClipWhen(new Date(i.mtime));
+  if (!confirm('Restaurer les réglages de la sauvegarde (' + quand + ') ?\n\n'
+    + 'Tes réglages actuels (favoris, raccourcis, icônes, volumes, tags) seront remplacés.\n'
+    + 'Les fichiers audio ne sont pas touchés. L\'application va se recharger.')) return;
+  const r = await window.sb.restoreBackup();
+  if (r && r.ok) toast('♻️ Réglages restaurés — rechargement…');
+  else toast('❌ ' + ((r && r.error) || 'Échec de la restauration'), 5000);
+});
+refreshBackupInfo();
 
 $('btnImport').addEventListener('click', async () => {
   if (!confirm('Importer une bibliothèque ?\nSes sons et icônes s\'ajouteront à la tienne (rien n\'est écrasé).')) return;

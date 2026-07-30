@@ -1090,6 +1090,45 @@ function autoBackupConfig() {
 ipcMain.handle('backup-now', () => autoBackupConfig());
 ipcMain.handle('open-backup-folder', () => { shell.openPath(backupDir()); return { ok: true }; });
 
+// Infos sur la sauvegarde disponible (pour proposer/afficher la restauration)
+ipcMain.handle('backup-info', () => {
+  try {
+    const dir = backupDir();
+    const st = path.join(dir, 'state.json');
+    if (!fs.existsSync(st)) return { exists: false };
+    const s = fs.statSync(st);
+    return { exists: true, mtime: s.mtimeMs, size: s.size, dir };
+  } catch { return { exists: false }; }
+});
+
+// Restaure les réglages depuis la sauvegarde. L'app DOIT recharger juste après,
+// sinon l'état en mémoire réécrirait aussitôt le state.json restauré.
+ipcMain.handle('restore-backup', () => {
+  try {
+    const dir = backupDir();
+    const bkState = path.join(dir, 'state.json');
+    const bkConfig = path.join(dir, 'config.json');
+    if (!fs.existsSync(bkState)) return { error: 'Aucune sauvegarde disponible' };
+
+    // filet : on sauvegarde l'état ACTUEL avant de l'écraser (restauration annulable)
+    const prev = path.join(dir, 'avant-restauration');
+    try {
+      fs.mkdirSync(prev, { recursive: true });
+      if (fs.existsSync(statePath())) fs.copyFileSync(statePath(), path.join(prev, 'state.json'));
+      if (fs.existsSync(configPath())) fs.copyFileSync(configPath(), path.join(prev, 'config.json'));
+    } catch {}
+
+    fs.copyFileSync(bkState, statePath());
+    if (fs.existsSync(bkConfig)) {
+      fs.copyFileSync(bkConfig, configPath());
+      loadConfig();   // recharge la config en mémoire (profils, géométrie…)
+    }
+    // recharge la fenêtre pour repartir sur l'état restauré
+    setTimeout(() => { if (win && !win.isDestroyed()) win.webContents.reload(); }, 150);
+    return { ok: true };
+  } catch (e) { return { error: String(e.message || e) }; }
+});
+
 /* ---------- IPC ---------- */
 ipcMain.handle('list-sounds', () => listSounds());
 
